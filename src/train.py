@@ -1,12 +1,12 @@
 """Model training: baselines, logistic regression, Dixon-Coles, XGBoost.
 
-Every model here shares one interface — `.fit(train_df)` then
-`.predict_proba(eval_df) -> (n, 3)` array in CLASSES order (H, D, A) — so
+Every model here shares one interface: `.fit(train_df)` then
+`.predict_proba(eval_df) -> (n, 3)` array in CLASSES order (H, D, A), so
 evaluate.py can loop over them identically regardless of what's underneath.
 
 Hyperparameters for XGBoost and logistic regression are chosen by
 walk-forward (expanding-window, season-by-season) cross-validation on the
-training seasons only — never a random split, and never touching
+training seasons only, never a random split, and never touching
 TEST_SEASONS. See `walk_forward_splits` and `tune_via_walk_forward`.
 """
 import itertools
@@ -59,7 +59,7 @@ def encode_labels(df: pd.DataFrame) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Walk-forward (expanding window) splitting — the only validation strategy
+# Walk-forward (expanding window) splitting: the only validation strategy
 # used anywhere in this project. Each fold trains on every season strictly
 # before the validation season, mirroring how the model would actually be
 # deployed (predict the next season using everything known so far).
@@ -80,7 +80,7 @@ def walk_forward_splits(df: pd.DataFrame, seasons: list[str], min_train_seasons:
 
 class HomeWinBaseline:
     """Always predicts a home win. No fitting, no probabilities beyond a
-    degenerate [1, 0, 0] — accuracy is the fair metric for this baseline;
+    degenerate [1, 0, 0]. Accuracy is the fair metric for this baseline;
     its log loss/Brier score are reported too but are not a meaningful
     comparison against genuinely probabilistic models (see README).
     """
@@ -96,7 +96,7 @@ class HomeWinBaseline:
 
 class BookmakerBaseline:
     """De-vigged Bet365 implied probabilities, computed in features.py.
-    Not fit on training data at all — it's the market's own forecast."""
+    Not fit on training data at all, it's the market's own forecast."""
 
     def fit(self, train_df: pd.DataFrame):
         return self
@@ -153,7 +153,7 @@ class XGBoostModel:
 
     def fit(self, train_df: pd.DataFrame):
         # XGBoost handles NaN natively (learns a default split direction for
-        # missing values) — no imputation, unlike the logistic pipeline.
+        # missing values), no imputation, unlike the logistic pipeline.
         X = train_df[FEATURE_COLUMNS]
         y = encode_labels(train_df)
         self.model.fit(X, y)
@@ -166,10 +166,10 @@ class XGBoostModel:
 class CalibratedXGBoostModel:
     """XGBoost with isotonic calibration fit on a held-out chronological
     slice of the training window (the most recent `calib_frac` of matches
-    by date — never the eval/test season itself).
+    by date, never the eval/test season itself).
 
     Why this exists: raw softmax probabilities from a gradient-boosted
-    tree ensemble are not automatically well-calibrated — a predicted 0.35
+    tree ensemble are not automatically well-calibrated. A predicted 0.35
     doesn't necessarily mean the outcome happens 35% of the time. Left
     uncorrected, this shows up starkly in evaluate.py's Kelly-criterion
     backtest: the raw model finds a nominal "positive edge" on ~88% of
@@ -210,7 +210,7 @@ class CalibratedXGBoostModel:
 # Poisson variables built from those strengths, with a small correction
 # (tau/rho) for the historically-observed excess of low-scoring draws.
 # Included as a second, non-ML baseline that a football-analytics team
-# would actually recognize — not just "yet another classifier."
+# would actually recognize, not just "yet another classifier."
 # ---------------------------------------------------------------------------
 
 def _dc_tau(x: int, y: int, lam: float, mu: float, rho: float) -> float:
@@ -250,7 +250,7 @@ class DixonColesModel:
 
         # Parameters: attack[0..n-1], defense[0..n-1], home_adv, rho.
         # Attack is fixed to sum to zero (via reparametrization at unpack
-        # time) so the model is identifiable — otherwise attack and defense
+        # time) so the model is identifiable, otherwise attack and defense
         # could both drift by an arbitrary constant with no effect on fit.
         def unpack(params):
             attack = params[:n - 1]

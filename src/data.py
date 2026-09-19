@@ -4,7 +4,7 @@ football-data.co.uk publishes one CSV per season per division. Column sets
 drift slightly across seasons (extra bookmakers get added over time, date
 formats change from dd/mm/yy to dd/mm/yyyy around 2019/20), so this module's
 job is narrow: fetch, cache, and normalize to one stable schema. No feature
-engineering happens here — that's features.py.
+engineering happens here, that's features.py.
 """
 import logging
 
