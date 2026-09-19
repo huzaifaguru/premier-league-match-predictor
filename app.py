@@ -15,30 +15,34 @@ import streamlit as st
 from src.config import CURRENT_SEASON, MODELS_DIR, ROOT_DIR, SEASON_CODES
 from src.data import load_raw_matches
 from src.evaluate import explain_single_match
-from src.features import FEATURE_COLUMNS, build_feature_table
+from src.features import FEATURE_COLUMNS, build_feature_table, describe_feature
 from src.train import CLASSES, CalibratedXGBoostModel
 
 CLASS_LABELS = {"H": "Home Win", "D": "Draw", "A": "Away Win"}
 BG_COLOR = "#000000"
-TEXT_COLOR = "#ffffff"
-ACCENT_COLOR = "#fe5900"
+TEXT_COLOR = "#e0e0e0"
+ACCENT_COLOR = "#fdda2b"
+SECONDARY_COLOR = "#2b94fd"
 
 st.set_page_config(page_title="Premier League Match Predictor", layout="wide")
 
 # Streamlit's native `[theme] font = "name:url"` config doesn't actually
-# inject the stylesheet for an external URL in this Streamlit version (verified:
-# no <link>/@import ever appears in the rendered page, font silently falls
-# back) — load it the traditional, reliable way instead.
+# inject the stylesheet for an external URL in this Streamlit version
+# (verified: no <link>/@import ever appears in the rendered page, font
+# silently falls back), so it's loaded the traditional, reliable way instead.
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap');
-    /* Exclude icon elements — Streamlit renders icons (expander arrows,
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    /* Exclude icon elements. Streamlit renders icons (expander arrows,
        etc.) as ligature text like "keyboard_arrow_right" in the Material
-       Symbols font; overriding font-family on them turns icons into
+       Symbols font, so overriding font-family on them turns icons into
        visible broken text instead of glyphs. */
     *:not([data-testid="stIconMaterial"]) {
-        font-family: 'Chakra Petch', sans-serif !important;
+        font-family: 'Inter', sans-serif !important;
+    }
+    button, input, select, [data-baseweb="select"], [data-testid="stExpander"] summary {
+        transition: all 250ms ease !important;
     }
     </style>
     """,
@@ -47,7 +51,7 @@ st.markdown(
 
 
 def _dark_figure(figsize):
-    """Matplotlib figures don't inherit Streamlit's theme automatically —
+    """Matplotlib figures don't inherit Streamlit's theme automatically, so
     style them to match rather than render a jarring white box on a black
     page."""
     fig, ax = plt.subplots(figsize=figsize)
@@ -58,7 +62,7 @@ def _dark_figure(figsize):
     ax.yaxis.label.set_color(TEXT_COLOR)
     ax.title.set_color(TEXT_COLOR)
     for spine in ax.spines.values():
-        spine.set_color("#434343")
+        spine.set_color("#3e4342")
     return fig, ax
 
 
@@ -67,7 +71,7 @@ def load_app_resources():
     raw_all = load_raw_matches(seasons=SEASON_CODES + [CURRENT_SEASON])
     features_all, state = build_feature_table(raw_all, return_state=True)
 
-    # Train on complete seasons only — the partial in-progress season stays
+    # Train on complete seasons only. The partial in-progress season stays
     # out of training (too small, still accumulating) but IS reflected in
     # `state`, so team form/Elo used for live predictions is current.
     train_features = features_all[features_all["season"].isin(SEASON_CODES)]
@@ -81,8 +85,8 @@ def load_app_resources():
         | set(raw_all.loc[raw_all["season"] == CURRENT_SEASON, "away_team"])
     )
     if len(current_teams) < 20:
-        # Early in a season, not every team may have played yet — fall back
-        # to the most recently completed season's roster.
+        # Early in a season, not every team may have played yet, so fall
+        # back to the most recently completed season's roster.
         last_complete = SEASON_CODES[-1]
         current_teams = sorted(
             set(raw_all.loc[raw_all["season"] == last_complete, "home_team"])
@@ -113,7 +117,7 @@ if results_table is not None and "bookmaker_baseline" in results_table.index and
     st.info(
         f"Honesty check: on held-out test seasons, this model {verdict} the bookmaker's own "
         f"odds (log loss {model_ll:.3f} vs {market_ll:.3f}). Treat the probabilities below as a "
-        "reasonable estimate to inspect, not a betting edge — see the README for the full analysis."
+        "reasonable estimate to inspect, not a betting edge. See the README for the full analysis."
     )
 
 col1, col2, col3 = st.columns([2, 2, 1.3])
@@ -145,11 +149,15 @@ with mcol:
 st.subheader(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
 explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
 fig, ax = _dark_figure(figsize=(8, 4))
-colors = [ACCENT_COLOR if v > 0 else "#555867" for v in explanation["shap_value"][::-1]]
+colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
 ax.barh(explanation["feature"][::-1], explanation["shap_value"][::-1], color=colors)
 ax.set_xlabel(f"SHAP value (push toward '{CLASS_LABELS[CLASSES[pred_idx]]}' →, away from it ←)")
 fig.tight_layout()
 st.pyplot(fig)
+
+with st.expander("Factor key: what these labels mean", expanded=True):
+    for feature_name in explanation["feature"]:
+        st.markdown(f"**`{feature_name}`**: {describe_feature(feature_name)}")
 
 with st.expander("Raw feature snapshot used for this prediction"):
     summary_rows = []
@@ -177,7 +185,7 @@ with st.expander("Compare against bookmaker odds (optional)"):
             "Model": proba,
             "Market (de-vigged)": market_proba,
         }, index=[CLASS_LABELS[c] for c in CLASSES])
-        st.bar_chart(compare_df, horizontal=True, color=[ACCENT_COLOR, "#555867"])
+        st.bar_chart(compare_df, horizontal=True, color=[ACCENT_COLOR, SECONDARY_COLOR])
 
 if results_table is not None:
     with st.expander("Full results table (held-out test seasons, 2023/24-2025/26)"):
