@@ -35,3 +35,11 @@ ROLLING_WINDOWS = [5, 10]
 ELO_INITIAL_RATING = 1500.0
 ELO_K_FACTOR = 20.0
 ELO_HOME_ADVANTAGE = 60.0
+# Fraction of a team's Elo rating carried over between seasons; the rest
+# regresses to ELO_INITIAL_RATING, approximating squad turnover in the
+# transfer window (same idea FiveThirtyEight uses for its NFL Elo model).
+ELO_SEASON_CARRYOVER = 0.75
+
+# Window used for home-specific and away-specific form (separate from the
+# overall ROLLING_WINDOWS, which mix home and away matches together).
+HOME_AWAY_FORM_WINDOW = 5
