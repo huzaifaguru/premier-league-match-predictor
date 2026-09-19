@@ -25,6 +25,26 @@ ACCENT_COLOR = "#fe5900"
 
 st.set_page_config(page_title="Premier League Match Predictor", layout="wide")
 
+# Streamlit's native `[theme] font = "name:url"` config doesn't actually
+# inject the stylesheet for an external URL in this Streamlit version (verified:
+# no <link>/@import ever appears in the rendered page, font silently falls
+# back) — load it the traditional, reliable way instead.
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap');
+    /* Exclude icon elements — Streamlit renders icons (expander arrows,
+       etc.) as ligature text like "keyboard_arrow_right" in the Material
+       Symbols font; overriding font-family on them turns icons into
+       visible broken text instead of glyphs. */
+    *:not([data-testid="stIconMaterial"]) {
+        font-family: 'Chakra Petch', sans-serif !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 def _dark_figure(figsize):
     """Matplotlib figures don't inherit Streamlit's theme automatically —
