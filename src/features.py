@@ -97,6 +97,11 @@ def build_feature_table(raw: pd.DataFrame) -> pd.DataFrame:
             "date": date, "season": season,
             "home_team": home, "away_team": away,
             "result": row["result"],
+            # Raw goals are carried through for the Dixon-Coles model and
+            # for score-level bookkeeping — NOT included in FEATURE_COLUMNS,
+            # since a match's own final score is exactly what we're
+            # predicting and would be pure leakage as a model input.
+            "home_goals": row["home_goals"], "away_goals": row["away_goals"],
             "odds_home": row.get("odds_home"), "odds_draw": row.get("odds_draw"), "odds_away": row.get("odds_away"),
         }
 

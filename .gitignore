@@ -9,9 +9,12 @@ data/raw/*.csv
 data/processed/*.parquet
 data/processed/*.csv
 
-# local artifacts
+# local artifacts — serialized model binaries only; best_params.json and
+# the *_tuning_results.csv files are small, human-readable, and are the
+# actual evidence behind the README's hyperparameter claims, so they're
+# versioned rather than ignored.
 *.log
 models/*.pkl
-models/*.json
+models/*.joblib
 .pytest_cache/
 .coverage
