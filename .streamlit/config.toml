@@ -4,7 +4,7 @@ primaryColor = "#fe5900"
 backgroundColor = "#000000"
 secondaryBackgroundColor = "#151515"
 textColor = "#ffffff"
-font = "Chakra Petch:https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap, sans-serif"
+font = "sans serif"
 baseFontSize = 16
 baseFontWeight = 600
 baseRadius = "small"
