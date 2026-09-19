@@ -18,6 +18,8 @@ import pandas as pd
 import xgboost as xgb
 from scipy.optimize import minimize
 from scipy.stats import poisson
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
@@ -159,6 +161,46 @@ class XGBoostModel:
 
     def predict_proba(self, eval_df: pd.DataFrame) -> np.ndarray:
         return self.model.predict_proba(eval_df[FEATURE_COLUMNS])
+
+
+class CalibratedXGBoostModel:
+    """XGBoost with isotonic calibration fit on a held-out chronological
+    slice of the training window (the most recent `calib_frac` of matches
+    by date — never the eval/test season itself).
+
+    Why this exists: raw softmax probabilities from a gradient-boosted
+    tree ensemble are not automatically well-calibrated — a predicted 0.35
+    doesn't necessarily mean the outcome happens 35% of the time. Left
+    uncorrected, this shows up starkly in evaluate.py's Kelly-criterion
+    backtest: the raw model finds a nominal "positive edge" on ~88% of
+    matches (mean claimed edge +25%), which is not a real market
+    inefficiency, it's calibration noise around odds that are already
+    close to fair. Isotonic regression, fit on data the base model never
+    trained on, corrects the probability-to-frequency mapping.
+    """
+
+    def __init__(self, calib_frac: float = 0.2, **xgb_params):
+        self.calib_frac = calib_frac
+        self.xgb_params = xgb_params
+        self.base_model: XGBoostModel | None = None
+        self.calibrated: CalibratedClassifierCV | None = None
+
+    def fit(self, train_df: pd.DataFrame):
+        train_df = train_df.sort_values("date")
+        n_calib = max(int(len(train_df) * self.calib_frac), 1)
+        fit_df, calib_df = train_df.iloc[:-n_calib], train_df.iloc[-n_calib:]
+
+        self.base_model = XGBoostModel(**self.xgb_params)
+        self.base_model.fit(fit_df)
+
+        X_calib = calib_df[FEATURE_COLUMNS]
+        y_calib = encode_labels(calib_df)
+        self.calibrated = CalibratedClassifierCV(estimator=FrozenEstimator(self.base_model.model), method="isotonic")
+        self.calibrated.fit(X_calib, y_calib)
+        return self
+
+    def predict_proba(self, eval_df: pd.DataFrame) -> np.ndarray:
+        return self.calibrated.predict_proba(eval_df[FEATURE_COLUMNS])
 
 
 # ---------------------------------------------------------------------------
