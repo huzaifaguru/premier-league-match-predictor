@@ -66,34 +66,108 @@ def _implied_probabilities(row: pd.Series) -> tuple[float, float, float]:
     return inv_home / overround, inv_draw / overround, inv_away / overround
 
 
-def build_feature_table(raw: pd.DataFrame) -> pd.DataFrame:
+class LeagueState:
+    """Mutable per-team state (rolling histories, Elo, last-played date) as
+    of some point in time. `snapshot()` reads it (pure — never mutates) to
+    produce a feature dict for a match; `advance()` folds an actual result
+    in. build_feature_table() drives one LeagueState forward through
+    history, calling snapshot() then advance() for every match in order —
+    exactly the leakage-safe sequencing described at the top of this file.
+
+    The app reuses the SAME snapshot() logic to featurize a hypothetical
+    future matchup: build a LeagueState from all matches played so far
+    (via build_feature_table(..., return_state=True)), then call
+    snapshot(home, away, today) with no advance() — there's no real result
+    to fold in yet. Sharing this code path (rather than re-deriving "what
+    are this team's current rolling stats" separately for the app) is what
+    guarantees the live app can't drift out of sync with how the model was
+    actually trained.
+    """
+
+    def __init__(self):
+        self.overall_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=_MAX_OVERALL_WINDOW))
+        self.home_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
+        self.away_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
+        self.last_played: dict[str, pd.Timestamp] = {}
+        self.elo: dict[str, float] = defaultdict(lambda: ELO_INITIAL_RATING)
+        self.current_season: str | None = None
+
+    def start_season_if_new(self, season: str):
+        if self.current_season is not None and season != self.current_season:
+            # New season: regress every known team's Elo toward the mean to
+            # approximate squad turnover. Teams not yet seen stay untouched
+            # (they'll init at ELO_INITIAL_RATING on first appearance,
+            # including newly promoted teams).
+            for team in list(self.elo.keys()):
+                self.elo[team] = ELO_INITIAL_RATING + ELO_SEASON_CARRYOVER * (self.elo[team] - ELO_INITIAL_RATING)
+        self.current_season = season
+
+    def snapshot(self, home: str, away: str, date: pd.Timestamp) -> dict:
+        feat: dict = {}
+
+        for window in ROLLING_WINDOWS:
+            h = _rolling_averages(self.overall_history[home], window)
+            a = _rolling_averages(self.overall_history[away], window)
+            for k in STAT_KEYS:
+                feat[f"home_form{window}_{k}"] = h[k]
+                feat[f"away_form{window}_{k}"] = a[k]
+            feat[f"home_form{window}_n"] = h["n"]
+            feat[f"away_form{window}_n"] = a["n"]
+
+        hh = _rolling_averages(self.home_history[home], HOME_AWAY_FORM_WINDOW)
+        aa = _rolling_averages(self.away_history[away], HOME_AWAY_FORM_WINDOW)
+        for k in STAT_KEYS:
+            feat[f"home_homeform{HOME_AWAY_FORM_WINDOW}_{k}"] = hh[k]
+            feat[f"away_awayform{HOME_AWAY_FORM_WINDOW}_{k}"] = aa[k]
+        feat[f"home_homeform{HOME_AWAY_FORM_WINDOW}_n"] = hh["n"]
+        feat[f"away_awayform{HOME_AWAY_FORM_WINDOW}_n"] = aa["n"]
+
+        feat["rest_days_home"] = (date - self.last_played[home]).days if home in self.last_played else np.nan
+        feat["rest_days_away"] = (date - self.last_played[away]).days if away in self.last_played else np.nan
+
+        elo_home_pre, elo_away_pre = self.elo[home], self.elo[away]
+        feat["elo_home_pre"] = elo_home_pre
+        feat["elo_away_pre"] = elo_away_pre
+        feat["elo_diff"] = elo_home_pre + ELO_HOME_ADVANTAGE - elo_away_pre
+
+        return feat
+
+    def advance(self, row: dict):
+        home, away, date = row["home_team"], row["away_team"], row["date"]
+
+        elo_home_pre, elo_away_pre = self.elo[home], self.elo[away]
+        expected_home = 1 / (1 + 10 ** (-(elo_home_pre + ELO_HOME_ADVANTAGE - elo_away_pre) / 400))
+        actual_home = 1.0 if row["result"] == "H" else (0.5 if row["result"] == "D" else 0.0)
+        self.elo[home] = elo_home_pre + ELO_K_FACTOR * (actual_home - expected_home)
+        self.elo[away] = elo_away_pre + ELO_K_FACTOR * ((1 - actual_home) - (1 - expected_home))
+
+        self.overall_history[home].append(_match_stats(row, is_home=True))
+        self.overall_history[away].append(_match_stats(row, is_home=False))
+        self.home_history[home].append(_match_stats(row, is_home=True))
+        self.away_history[away].append(_match_stats(row, is_home=False))
+        self.last_played[home] = date
+        self.last_played[away] = date
+
+    @property
+    def known_teams(self) -> list[str]:
+        return sorted(self.elo.keys())
+
+
+def build_feature_table(raw: pd.DataFrame, return_state: bool = False):
     """Walk matches in chronological order, emitting one feature row per
     match built only from that team's history up to (not including) it.
     """
     matches = raw.sort_values(["date", "season"]).reset_index(drop=True)
-
-    overall_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=_MAX_OVERALL_WINDOW))
-    home_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
-    away_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
-    last_played: dict[str, pd.Timestamp] = {}
-    elo: dict[str, float] = defaultdict(lambda: ELO_INITIAL_RATING)
-    current_season: str | None = None
+    state = LeagueState()
 
     records = []
     for row in matches.itertuples(index=False):
         row = row._asdict()
         home, away, date, season = row["home_team"], row["away_team"], row["date"], row["season"]
+        state.start_season_if_new(season)
 
-        if current_season is not None and season != current_season:
-            # New season: regress every known team's Elo toward the mean to
-            # approximate squad turnover. Teams not yet seen stay untouched
-            # (they'll init at ELO_INITIAL_RATING on first appearance,
-            # including newly promoted teams).
-            for team in list(elo.keys()):
-                elo[team] = ELO_INITIAL_RATING + ELO_SEASON_CARRYOVER * (elo[team] - ELO_INITIAL_RATING)
-        current_season = season
-
-        feat: dict = {
+        feat = state.snapshot(home, away, date)
+        feat.update({
             "date": date, "season": season,
             "home_team": home, "away_team": away,
             "result": row["result"],
@@ -103,36 +177,7 @@ def build_feature_table(raw: pd.DataFrame) -> pd.DataFrame:
             # predicting and would be pure leakage as a model input.
             "home_goals": row["home_goals"], "away_goals": row["away_goals"],
             "odds_home": row.get("odds_home"), "odds_draw": row.get("odds_draw"), "odds_away": row.get("odds_away"),
-        }
-
-        # --- rolling form (snapshot BEFORE this match) ---
-        for window in ROLLING_WINDOWS:
-            h = _rolling_averages(overall_history[home], window)
-            a = _rolling_averages(overall_history[away], window)
-            for k in STAT_KEYS:
-                feat[f"home_form{window}_{k}"] = h[k]
-                feat[f"away_form{window}_{k}"] = a[k]
-            feat[f"home_form{window}_n"] = h["n"]
-            feat[f"away_form{window}_n"] = a["n"]
-
-        hh = _rolling_averages(home_history[home], HOME_AWAY_FORM_WINDOW)
-        aa = _rolling_averages(away_history[away], HOME_AWAY_FORM_WINDOW)
-        for k in STAT_KEYS:
-            feat[f"home_homeform{HOME_AWAY_FORM_WINDOW}_{k}"] = hh[k]
-            feat[f"away_awayform{HOME_AWAY_FORM_WINDOW}_{k}"] = aa[k]
-        feat[f"home_homeform{HOME_AWAY_FORM_WINDOW}_n"] = hh["n"]
-        feat[f"away_awayform{HOME_AWAY_FORM_WINDOW}_n"] = aa["n"]
-
-        # --- rest days (snapshot BEFORE this match) ---
-        feat["rest_days_home"] = (date - last_played[home]).days if home in last_played else np.nan
-        feat["rest_days_away"] = (date - last_played[away]).days if away in last_played else np.nan
-
-        # --- Elo (snapshot BEFORE this match) ---
-        elo_home_pre, elo_away_pre = elo[home], elo[away]
-        expected_home = 1 / (1 + 10 ** (-(elo_home_pre + ELO_HOME_ADVANTAGE - elo_away_pre) / 400))
-        feat["elo_home_pre"] = elo_home_pre
-        feat["elo_away_pre"] = elo_away_pre
-        feat["elo_diff"] = elo_home_pre + ELO_HOME_ADVANTAGE - elo_away_pre
+        })
 
         # --- de-vigged bookmaker implied probabilities (not a model feature —
         # kept alongside the row so evaluate.py can build the odds baseline
@@ -143,20 +188,10 @@ def build_feature_table(raw: pd.DataFrame) -> pd.DataFrame:
             feat["implied_prob_home"] = feat["implied_prob_draw"] = feat["implied_prob_away"] = np.nan
 
         records.append(feat)
+        state.advance(row)
 
-        # --- now fold this match's actual result into each team's history ---
-        actual_home = 1.0 if row["result"] == "H" else (0.5 if row["result"] == "D" else 0.0)
-        elo[home] = elo_home_pre + ELO_K_FACTOR * (actual_home - expected_home)
-        elo[away] = elo_away_pre + ELO_K_FACTOR * ((1 - actual_home) - (1 - expected_home))
-
-        overall_history[home].append(_match_stats(row, is_home=True))
-        overall_history[away].append(_match_stats(row, is_home=False))
-        home_history[home].append(_match_stats(row, is_home=True))
-        away_history[away].append(_match_stats(row, is_home=False))
-        last_played[home] = date
-        last_played[away] = date
-
-    return pd.DataFrame.from_records(records)
+    df = pd.DataFrame.from_records(records)
+    return (df, state) if return_state else df
 
 
 def _feature_columns() -> list[str]:

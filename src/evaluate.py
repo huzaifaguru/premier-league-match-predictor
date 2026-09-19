@@ -150,6 +150,29 @@ def plot_calibration(all_predictions: dict,
 # only, matching the hyperparameter-tuning data, explained on TEST_SEASONS)
 # ---------------------------------------------------------------------------
 
+def _normalize_shap_array(raw_shap) -> np.ndarray:
+    # shap_values shape varies by version/objective: list-of-arrays (one per
+    # class) for older APIs, or a single (n, features, classes) array for
+    # newer ones. Normalize to (n, features, classes).
+    if isinstance(raw_shap, list):
+        return np.stack(raw_shap, axis=-1)
+    return raw_shap
+
+
+def explain_single_match(base_xgb_model, X_row: pd.DataFrame, class_idx: int, top_n: int = 8) -> pd.DataFrame:
+    """Local SHAP explanation for one hypothetical match, used by app.py.
+    Explains the underlying (uncalibrated) XGBoost model directly —
+    isotonic calibration is a monotonic per-class rescaling and doesn't
+    change which features drove the prediction, just how confidently the
+    probability is stated."""
+    explainer = shap.TreeExplainer(base_xgb_model)
+    shap_array = _normalize_shap_array(explainer.shap_values(X_row))
+    values = shap_array[0, :, class_idx]
+    out = pd.DataFrame({"feature": FEATURE_COLUMNS, "shap_value": values})
+    out["abs_shap"] = out["shap_value"].abs()
+    return out.sort_values("abs_shap", ascending=False).head(top_n).drop(columns="abs_shap")
+
+
 def shap_feature_importance(df: pd.DataFrame, best_params: dict, top_n: int = 15) -> pd.DataFrame:
     train_df = df[df["season"].isin(TRAIN_SEASONS)]
     test_df = df[df["season"].isin(TEST_SEASONS)]
@@ -159,15 +182,7 @@ def shap_feature_importance(df: pd.DataFrame, best_params: dict, top_n: int = 15
 
     X_test = test_df[FEATURE_COLUMNS]
     explainer = shap.TreeExplainer(model.model)
-    raw_shap = explainer.shap_values(X_test)
-
-    # shap_values shape varies by version/objective: list-of-arrays (one per
-    # class) for older APIs, or a single (n, features, classes) array for
-    # newer ones. Normalize to (n, features, classes) before aggregating.
-    if isinstance(raw_shap, list):
-        shap_array = np.stack(raw_shap, axis=-1)
-    else:
-        shap_array = raw_shap
+    shap_array = _normalize_shap_array(explainer.shap_values(X_test))
 
     mean_abs = np.abs(shap_array).mean(axis=(0, 2))  # mean over samples AND classes
     importance = pd.DataFrame({"feature": FEATURE_COLUMNS, "mean_abs_shap": mean_abs})
