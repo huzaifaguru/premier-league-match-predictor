@@ -18,13 +18,13 @@ SEASON_CODES = [
     "2526",
 ]
 
-# Held out entirely for the final walk-forward test — never touched during
+# Held out entirely for the final walk-forward test, never touched during
 # feature/model iteration.
 TEST_SEASONS = ["2324", "2425", "2526"]
 
 # 2026/27 is currently in progress (a few gameweeks played). It's excluded
-# from SEASON_CODES/train/test — too small a sample and still accumulating —
-# but the Streamlit app fetches it separately to compute each team's
+# from SEASON_CODES/train/test since it's too small a sample and still
+# accumulating, but the Streamlit app fetches it separately to compute each team's
 # up-to-date rolling form/Elo for live predictions.
 CURRENT_SEASON = "2627"
 

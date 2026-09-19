@@ -2,7 +2,7 @@
 
 The one rule everything here obeys: a match's features are built ONLY from
 information available strictly *before* that match kicked off. We enforce
-this structurally, not by hoping — the code makes a single forward pass
+this structurally, not by hoping. The code makes a single forward pass
 through matches in date order, snapshotting each team's rolling stats
 *before* folding the current match's result into that team's history. See
 tests/test_features.py for explicit leakage-guard assertions.
@@ -59,7 +59,7 @@ def _implied_probabilities(row: pd.Series) -> tuple[float, float, float]:
     """De-vig bookmaker odds via the multiplicative method: divide each
     raw implied probability (1/odds) by the overround so the three
     outcomes sum to 1. This is what 'implied probability with the margin
-    removed' means — raw 1/odds always sums to >1 because it embeds the
+    removed' means: raw 1/odds always sums to >1 because it embeds the
     bookmaker's profit margin.
     """
     inv_home, inv_draw, inv_away = 1 / row["odds_home"], 1 / row["odds_draw"], 1 / row["odds_away"]
@@ -69,17 +69,17 @@ def _implied_probabilities(row: pd.Series) -> tuple[float, float, float]:
 
 class LeagueState:
     """Mutable per-team state (rolling histories, Elo, last-played date) as
-    of some point in time. `snapshot()` reads it (pure — never mutates) to
+    of some point in time. `snapshot()` reads it (pure, never mutates) to
     produce a feature dict for a match; `advance()` folds an actual result
     in. build_feature_table() drives one LeagueState forward through
-    history, calling snapshot() then advance() for every match in order —
+    history, calling snapshot() then advance() for every match in order,
     exactly the leakage-safe sequencing described at the top of this file.
 
     The app reuses the SAME snapshot() logic to featurize a hypothetical
     future matchup: build a LeagueState from all matches played so far
     (via build_feature_table(..., return_state=True)), then call
-    snapshot(home, away, today) with no advance() — there's no real result
-    to fold in yet. Sharing this code path (rather than re-deriving "what
+    snapshot(home, away, today) with no advance() since there's no real
+    result to fold in yet. Sharing this code path (rather than re-deriving "what
     are this team's current rolling stats" separately for the app) is what
     guarantees the live app can't drift out of sync with how the model was
     actually trained.
@@ -173,14 +173,14 @@ def build_feature_table(raw: pd.DataFrame, return_state: bool = False):
             "home_team": home, "away_team": away,
             "result": row["result"],
             # Raw goals are carried through for the Dixon-Coles model and
-            # for score-level bookkeeping — NOT included in FEATURE_COLUMNS,
+            # for score-level bookkeeping, NOT included in FEATURE_COLUMNS,
             # since a match's own final score is exactly what we're
             # predicting and would be pure leakage as a model input.
             "home_goals": row["home_goals"], "away_goals": row["away_goals"],
             "odds_home": row.get("odds_home"), "odds_draw": row.get("odds_draw"), "odds_away": row.get("odds_away"),
         })
 
-        # --- de-vigged bookmaker implied probabilities (not a model feature —
+        # --- de-vigged bookmaker implied probabilities (not a model feature,
         # kept alongside the row so evaluate.py can build the odds baseline
         # without re-joining raw data) ---
         if pd.notna(feat["odds_home"]) and pd.notna(feat["odds_draw"]) and pd.notna(feat["odds_away"]):

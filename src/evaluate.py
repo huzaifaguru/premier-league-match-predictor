@@ -5,7 +5,7 @@ walk-forward, not a single train/test split: to predict 2023/24 we train on
 everything before it; to predict 2024/25 we retrain including 2023/24; to
 predict 2025/26 we retrain including 2024/25 too. Each season is always
 predicted using only data that would actually have been available before
-it kicked off — this mirrors how the model would be deployed and retrained
+it kicked off. This mirrors how the model would be deployed and retrained
 in practice, and is strictly more honest than fitting once and scoring all
 three seasons with a single stale model.
 """
@@ -161,8 +161,8 @@ def _normalize_shap_array(raw_shap) -> np.ndarray:
 
 def explain_single_match(base_xgb_model, X_row: pd.DataFrame, class_idx: int, top_n: int = 8) -> pd.DataFrame:
     """Local SHAP explanation for one hypothetical match, used by app.py.
-    Explains the underlying (uncalibrated) XGBoost model directly —
-    isotonic calibration is a monotonic per-class rescaling and doesn't
+    Explains the underlying (uncalibrated) XGBoost model directly.
+    Isotonic calibration is a monotonic per-class rescaling and doesn't
     change which features drove the prediction, just how confidently the
     probability is stated."""
     explainer = shap.TreeExplainer(base_xgb_model)
@@ -228,7 +228,7 @@ def failure_analysis(pred_df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Kelly-criterion calibration backtest — paper money only. This is a way of
+# Kelly-criterion calibration backtest, paper money only. This is a way of
 # asking "are these probabilities decision-useful", not betting advice: if
 # a model is well-calibrated and occasionally spots a mispriced outcome,
 # Kelly staking against the closing odds should show positive long-run
@@ -240,7 +240,7 @@ def kelly_backtest(pred_df: pd.DataFrame, kelly_fraction: float = 0.5, max_stake
     """`min_edge` is a materiality threshold: only bet when claimed EV
     exceeds it, not just whenever it's nominally positive. Without one,
     Kelly staking bets on every scrap of noise around the model's true
-    (unknown) probabilities — see the README for what that costs when
+    (unknown) probabilities. See the README for what that costs when
     min_edge=0 against a model with no real edge over the market.
     """
     odds = pred_df[["odds_home", "odds_draw", "odds_away"]].to_numpy()

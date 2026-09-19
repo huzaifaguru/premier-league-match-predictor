@@ -104,6 +104,11 @@ def load_results_table():
 model, state, teams = load_app_resources()
 
 st.title("Premier League Match Outcome Predictor")
+st.markdown(
+    f"<div style='height:4px; width:72px; background:{ACCENT_COLOR}; "
+    "border-radius:2px; margin:4px 0 16px 0;'></div>",
+    unsafe_allow_html=True,
+)
 st.caption(
     "XGBoost + isotonic calibration, trained on 15 complete Premier League seasons "
     "(2010/11-2025/26) with leakage-safe rolling form, home/away split form, and Elo features."
@@ -120,44 +125,48 @@ if results_table is not None and "bookmaker_baseline" in results_table.index and
         "reasonable estimate to inspect, not a betting edge. See the README for the full analysis."
     )
 
-col1, col2, col3 = st.columns([2, 2, 1.3])
-with col1:
-    home_team = st.selectbox("Home team", teams, index=teams.index("Arsenal") if "Arsenal" in teams else 0)
-with col2:
-    away_options = [t for t in teams if t != home_team]
-    away_team = st.selectbox("Away team", away_options, index=0)
-with col3:
-    match_date = st.date_input("Match date", value=pd.Timestamp.today())
+with st.container(border=True):
+    st.markdown("##### Choose a matchup")
+    col1, col2, col3 = st.columns([2, 2, 1.3])
+    with col1:
+        home_team = st.selectbox("Home team", teams, index=teams.index("Arsenal") if "Arsenal" in teams else 0)
+    with col2:
+        away_options = [t for t in teams if t != home_team]
+        away_team = st.selectbox("Away team", away_options, index=0)
+    with col3:
+        match_date = st.date_input("Match date", value=pd.Timestamp.today())
 
 feat = state.snapshot(home_team, away_team, pd.Timestamp(match_date))
 X_row = pd.DataFrame([feat])[FEATURE_COLUMNS]
 proba = model.predict_proba(X_row)[0]
 pred_idx = int(proba.argmax())
 
-st.subheader("Predicted probabilities")
-prob_df = pd.DataFrame({
-    "Outcome": [CLASS_LABELS[c] for c in CLASSES],
-    "Probability": proba,
-}).set_index("Outcome")
-pcol, mcol = st.columns([2, 1])
-with pcol:
-    st.bar_chart(prob_df, horizontal=True, color=ACCENT_COLOR)
-with mcol:
-    for c, p in zip(CLASSES, proba):
-        st.metric(CLASS_LABELS[c], f"{p:.1%}")
+with st.container(border=True):
+    st.markdown("##### Predicted probabilities")
+    prob_df = pd.DataFrame({
+        "Outcome": [CLASS_LABELS[c] for c in CLASSES],
+        "Probability": proba,
+    }).set_index("Outcome")
+    pcol, mcol = st.columns([2, 1])
+    with pcol:
+        st.bar_chart(prob_df, horizontal=True, color=ACCENT_COLOR)
+    with mcol:
+        for c, p in zip(CLASSES, proba):
+            st.metric(CLASS_LABELS[c], f"{p:.1%}")
 
-st.subheader(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
-explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
-fig, ax = _dark_figure(figsize=(8, 4))
-colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
-ax.barh(explanation["feature"][::-1], explanation["shap_value"][::-1], color=colors)
-ax.set_xlabel(f"SHAP value (push toward '{CLASS_LABELS[CLASSES[pred_idx]]}' →, away from it ←)")
-fig.tight_layout()
-st.pyplot(fig)
+with st.container(border=True):
+    st.markdown(f"##### Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
+    explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
+    fig, ax = _dark_figure(figsize=(8, 4))
+    colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
+    ax.barh(explanation["feature"][::-1], explanation["shap_value"][::-1], color=colors)
+    ax.set_xlabel(f"SHAP value (push toward '{CLASS_LABELS[CLASSES[pred_idx]]}' →, away from it ←)")
+    fig.tight_layout()
+    st.pyplot(fig)
 
-with st.expander("Factor key: what these labels mean", expanded=True):
-    for feature_name in explanation["feature"]:
-        st.markdown(f"**`{feature_name}`**: {describe_feature(feature_name)}")
+    with st.expander("Factor key: what these labels mean", expanded=True):
+        for feature_name in explanation["feature"]:
+            st.markdown(f"**`{feature_name}`**: {describe_feature(feature_name)}")
 
 with st.expander("Raw feature snapshot used for this prediction"):
     summary_rows = []
