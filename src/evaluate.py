@@ -192,7 +192,7 @@ def shap_feature_importance(df: pd.DataFrame, best_params: dict, top_n: int = 15
     top = importance.head(top_n).iloc[::-1]
     ax.barh(top["feature"], top["mean_abs_shap"])
     ax.set_xlabel("Mean |SHAP value| (avg over H/D/A classes)")
-    ax.set_title(f"Top {top_n} features — XGBoost, test seasons")
+    ax.set_title(f"Top {top_n} features: XGBoost, test seasons")
     fig.tight_layout()
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(REPORTS_DIR / "shap_importance.png", dpi=150)
@@ -283,7 +283,7 @@ def plot_kelly_backtest(results: dict):
     ax.axhline(1.0, linestyle="--", color="gray", linewidth=1)
     ax.set_ylabel("Bankroll (starting at 1.0, fractional Kelly, paper money)")
     ax.set_xlabel("Date")
-    ax.set_title("Kelly-criterion calibration backtest — test seasons")
+    ax.set_title("Kelly-criterion calibration backtest, test seasons")
     ax.legend()
     fig.tight_layout()
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)

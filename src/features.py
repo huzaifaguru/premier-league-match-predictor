@@ -7,6 +7,7 @@ through matches in date order, snapshotting each team's rolling stats
 *before* folding the current match's result into that team's history. See
 tests/test_features.py for explicit leakage-guard assertions.
 """
+import re
 from collections import defaultdict, deque
 
 import numpy as np
@@ -208,6 +209,53 @@ def _feature_columns() -> list[str]:
 
 
 FEATURE_COLUMNS = _feature_columns()
+
+STAT_DESCRIPTIONS = {
+    "goals_for": "goals scored",
+    "goals_against": "goals conceded",
+    "shots_for": "shots taken",
+    "shots_against": "shots faced",
+    "shots_target_for": "shots on target taken",
+    "shots_target_against": "shots on target faced",
+    "corners_for": "corners won",
+    "corners_against": "corners conceded",
+}
+
+_SPECIAL_FEATURE_DESCRIPTIONS = {
+    "elo_diff": "The gap between the two teams' Elo strength ratings, with home advantage already added in. The single biggest driver of every prediction.",
+    "elo_home_pre": "The home team's Elo rating going into this match.",
+    "elo_away_pre": "The away team's Elo rating going into this match.",
+    "rest_days_home": "Days since the home team's previous match.",
+    "rest_days_away": "Days since the away team's previous match.",
+}
+
+_FEATURE_NAME_PATTERN = re.compile(r"^(home|away)_(form|homeform|awayform)(\d+)_(.+)$")
+
+
+def describe_feature(name: str) -> str:
+    """Plain-English description of a FEATURE_COLUMNS entry, used to build
+    a factor legend in the Streamlit app so a reader doesn't have to guess
+    what e.g. 'home_homeform5_shots_target_for' means."""
+    if name in _SPECIAL_FEATURE_DESCRIPTIONS:
+        return _SPECIAL_FEATURE_DESCRIPTIONS[name]
+
+    match = _FEATURE_NAME_PATTERN.match(name)
+    if not match:
+        return name
+
+    side, form_type, window, stat = match.groups()
+    side_label = "Home team's" if side == "home" else "Away team's"
+    if form_type == "form":
+        scope = f"last {window} matches, home or away"
+    elif form_type == "homeform":
+        scope = f"last {window} home matches"
+    else:
+        scope = f"last {window} away matches"
+
+    if stat == "n":
+        return f"{side_label} number of matches this average is based on (fewer than {window} early in a team's history)."
+    stat_label = STAT_DESCRIPTIONS.get(stat, stat.replace("_", " "))
+    return f"{side_label} average {stat_label} over its {scope}."
 
 
 if __name__ == "__main__":
