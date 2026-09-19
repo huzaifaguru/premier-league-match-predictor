@@ -19,8 +19,27 @@ from src.features import FEATURE_COLUMNS, build_feature_table
 from src.train import CLASSES, CalibratedXGBoostModel
 
 CLASS_LABELS = {"H": "Home Win", "D": "Draw", "A": "Away Win"}
+BG_COLOR = "#000000"
+TEXT_COLOR = "#ffffff"
+ACCENT_COLOR = "#fe5900"
 
 st.set_page_config(page_title="Premier League Match Predictor", layout="wide")
+
+
+def _dark_figure(figsize):
+    """Matplotlib figures don't inherit Streamlit's theme automatically —
+    style them to match rather than render a jarring white box on a black
+    page."""
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor(BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+    ax.tick_params(colors=TEXT_COLOR)
+    ax.xaxis.label.set_color(TEXT_COLOR)
+    ax.yaxis.label.set_color(TEXT_COLOR)
+    ax.title.set_color(TEXT_COLOR)
+    for spine in ax.spines.values():
+        spine.set_color("#434343")
+    return fig, ax
 
 
 @st.cache_resource(show_spinner="Loading match history and training the model (first run only, ~30s)...")
@@ -98,15 +117,15 @@ prob_df = pd.DataFrame({
 }).set_index("Outcome")
 pcol, mcol = st.columns([2, 1])
 with pcol:
-    st.bar_chart(prob_df, horizontal=True)
+    st.bar_chart(prob_df, horizontal=True, color=ACCENT_COLOR)
 with mcol:
     for c, p in zip(CLASSES, proba):
         st.metric(CLASS_LABELS[c], f"{p:.1%}")
 
 st.subheader(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
 explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
-fig, ax = plt.subplots(figsize=(8, 4))
-colors = ["#2ca02c" if v > 0 else "#d62728" for v in explanation["shap_value"][::-1]]
+fig, ax = _dark_figure(figsize=(8, 4))
+colors = [ACCENT_COLOR if v > 0 else "#555867" for v in explanation["shap_value"][::-1]]
 ax.barh(explanation["feature"][::-1], explanation["shap_value"][::-1], color=colors)
 ax.set_xlabel(f"SHAP value (push toward '{CLASS_LABELS[CLASSES[pred_idx]]}' →, away from it ←)")
 fig.tight_layout()
@@ -138,7 +157,7 @@ with st.expander("Compare against bookmaker odds (optional)"):
             "Model": proba,
             "Market (de-vigged)": market_proba,
         }, index=[CLASS_LABELS[c] for c in CLASSES])
-        st.bar_chart(compare_df, horizontal=True)
+        st.bar_chart(compare_df, horizontal=True, color=[ACCENT_COLOR, "#555867"])
 
 if results_table is not None:
     with st.expander("Full results table (held-out test seasons, 2023/24-2025/26)"):
