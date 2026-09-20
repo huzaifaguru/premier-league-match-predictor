@@ -8,6 +8,7 @@ engineering happens here, that's features.py.
 """
 import io
 import logging
+import re
 
 import pandas as pd
 import requests
@@ -155,6 +156,118 @@ def load_upcoming_fixtures() -> pd.DataFrame:
     df["kickoff"] = pd.to_datetime(df["date"] + " " + df["time"], dayfirst=True, format="mixed")
     df = df.drop(columns=["date", "time"])
     return df.sort_values("kickoff").reset_index(drop=True)[columns]
+
+
+# football-data.co.uk's fixtures.csv only ever lists the nearest gameweek
+# (confirmed empirically: it never mixes in far-future ones), which isn't
+# useful for a "pick any upcoming match" selector once that gameweek has
+# kicked off. openfootball's football.db project publishes the full season
+# schedule up front, all ~380 matches, filled in with scores as they're
+# played, as explicit public domain data, so it's the source used for
+# genuinely-future fixtures instead.
+FULL_SEASON_FIXTURES_URL = "https://raw.githubusercontent.com/openfootball/england/master/{season}/1-premierleague.txt"
+
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+)}
+
+# A "  Wed Sep 17 2026" or "  Sat Sep 20" style line (year only repeats
+# when it changes, so most lines within a season omit it).
+_DATE_LINE = re.compile(r"^  \w{3}\s+(\w{3})\s+(\d{1,2})(?:\s+(\d{4}))?\s*$")
+# A match line either starts with "    HH:MM  " (a new kickoff time) or is
+# a continuation at the same time as the previous line, indented to align
+# with the team-name column instead (11-12 spaces, no time shown).
+_MATCH_LINE = re.compile(
+    r"^(?:\s{4}(\d{2}):(\d{2})\s{2}|\s{11,12})"
+    r"(.+?)\s+v\s+(.+?)"
+    r"(?:\s{2,}(\d+)-(\d+))?"
+    r"\s*(?:\([^)]*\))?\s*$"
+)
+
+# openfootball spells out full club names ("Manchester United FC"); the
+# rest of this project follows football-data.co.uk's shorter convention
+# ("Man United"), so every source needs to agree on team names for the
+# app's team-lookup logic (state.snapshot, standings, etc.) to work
+# regardless of which source a given fixture came from. Hand-built from
+# the current 20-team Premier League roster - needs updating whenever
+# promotion/relegation changes league membership.
+_FULL_TO_SHORT_TEAM_NAME = {
+    "AFC Bournemouth": "Bournemouth",
+    "Arsenal FC": "Arsenal",
+    "Aston Villa FC": "Aston Villa",
+    "Brentford FC": "Brentford",
+    "Brighton & Hove Albion FC": "Brighton",
+    "Chelsea FC": "Chelsea",
+    "Coventry City FC": "Coventry",
+    "Crystal Palace FC": "Crystal Palace",
+    "Everton FC": "Everton",
+    "Fulham FC": "Fulham",
+    "Hull City AFC": "Hull",
+    "Ipswich Town FC": "Ipswich",
+    "Leeds United FC": "Leeds",
+    "Liverpool FC": "Liverpool",
+    "Manchester City FC": "Man City",
+    "Manchester United FC": "Man United",
+    "Newcastle United FC": "Newcastle",
+    "Nottingham Forest FC": "Nott'm Forest",
+    "Sunderland AFC": "Sunderland",
+    "Tottenham Hotspur FC": "Tottenham",
+}
+
+
+def load_full_season_fixtures(season: str = "2026-27") -> pd.DataFrame:
+    """Full-season Premier League schedule (played and unplayed matches),
+    parsed from openfootball's plain-text format. Scores are None for
+    matches not yet played, which is what makes a fixture here usable as a
+    genuinely-future matchup, unlike load_upcoming_fixtures()'s narrower
+    nearest-gameweek-only list.
+    """
+    columns = ["kickoff", "home_team", "away_team", "home_goals", "away_goals"]
+    url = FULL_SEASON_FIXTURES_URL.format(season=season)
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        text = response.text
+    except Exception:
+        logger.warning("Could not fetch full-season fixtures", exc_info=True)
+        return pd.DataFrame(columns=columns)
+
+    current_year = None
+    current_month_day = None
+    current_time = None
+    rows = []
+    for raw_line in text.splitlines():
+        date_match = _DATE_LINE.match(raw_line)
+        if date_match:
+            month_str, day_str, year_str = date_match.groups()
+            if year_str:
+                current_year = int(year_str)
+            current_month_day = (_MONTHS[month_str], int(day_str))
+            current_time = None
+            continue
+
+        match = _MATCH_LINE.match(raw_line)
+        if not match or current_month_day is None or current_year is None:
+            continue
+        hour_str, minute_str, home, away, hg, ag = match.groups()
+        if hour_str:
+            current_time = (int(hour_str), int(minute_str))
+        if current_time is None:
+            continue
+
+        month, day = current_month_day
+        hour, minute = current_time
+        rows.append({
+            "kickoff": pd.Timestamp(year=current_year, month=month, day=day, hour=hour, minute=minute),
+            "home_team": _FULL_TO_SHORT_TEAM_NAME.get(home.strip(), home.strip()),
+            "away_team": _FULL_TO_SHORT_TEAM_NAME.get(away.strip(), away.strip()),
+            "home_goals": int(hg) if hg else None,
+            "away_goals": int(ag) if ag else None,
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values("kickoff").reset_index(drop=True)[columns]
 
 
 if __name__ == "__main__":
