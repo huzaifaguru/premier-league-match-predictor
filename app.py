@@ -12,6 +12,7 @@ import html
 import json
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -256,6 +257,62 @@ def compute_standings(season_df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+@st.cache_data(show_spinner="Scoring the model against every match played this season...")
+def build_season_comparison_table(_model, features_all: pd.DataFrame, full_season_df: pd.DataFrame) -> pd.DataFrame:
+    """One row per match in the current season's full schedule: already-
+    played matches get the model's pre-match prediction (from the same
+    leakage-safe features used everywhere else in this app) alongside the
+    actual result, so a reader can see the model's real season-long track
+    record at a glance rather than one match at a time. Upcoming matches
+    intentionally show no prediction here: this table is for checking the
+    model against outcomes that already happened, not for forecasting
+    (that's what the picker above is for).
+
+    `_model` (leading underscore) tells Streamlit's cache not to hash it:
+    it's the same fitted model object every rerun, hashing it would be
+    both slow and pointless.
+    """
+    season_features = features_all[features_all["season"] == CURRENT_SEASON].copy()
+    if not season_features.empty:
+        proba = _model.predict_proba(season_features[FEATURE_COLUMNS])
+        pred_idx = proba.argmax(axis=1)
+        season_features["predicted_class"] = [CLASSES[i] for i in pred_idx]
+        season_features["confidence"] = proba[np.arange(len(proba)), pred_idx]
+
+    rows = []
+    for r in full_season_df.itertuples(index=False):
+        row = {"Date": r.kickoff.strftime("%Y-%m-%d"), "Home": r.home_team, "Away": r.away_team}
+        played = pd.notna(r.home_goals)
+
+        if not played:
+            row["Predicted"] = ""
+            row["Confidence"] = ""
+            row["Actual result"] = "Not played yet"
+            row["Correct?"] = ""
+            rows.append(row)
+            continue
+
+        match = season_features[
+            (season_features["home_team"] == r.home_team) & (season_features["away_team"] == r.away_team)
+            & (season_features["date"].dt.date == r.kickoff.date())
+        ]
+        if not match.empty:
+            m = match.iloc[0]
+            row["Predicted"] = CLASS_LABELS[m["predicted_class"]]
+            row["Confidence"] = f"{m['confidence']:.0%}"
+            row["Correct?"] = "Yes" if m["predicted_class"] == m["result"] else "No"
+        else:
+            # Played, but not synced into the leakage-safe feature table yet
+            # (same lag as the single-match lookup_actual_result()).
+            row["Predicted"] = ""
+            row["Confidence"] = ""
+            row["Correct?"] = ""
+        row["Actual result"] = f"{int(r.home_goals)} - {int(r.away_goals)}"
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
 @st.cache_resource(show_spinner="Loading match history and training the model (first run only, ~30s)...")
 def load_app_resources():
     raw_all = load_raw_matches(seasons=SEASON_CODES + [CURRENT_SEASON])
@@ -282,7 +339,7 @@ def load_app_resources():
     current_teams = sorted(set(context_matches["home_team"]) | set(context_matches["away_team"]))
     standings_df = compute_standings(context_matches)
 
-    return model, state, current_teams, raw_all, standings_df, context_season
+    return model, state, current_teams, raw_all, standings_df, context_season, features_all
 
 
 @st.cache_data
@@ -306,7 +363,7 @@ def load_full_season_fixtures_cached():
     return load_full_season_fixtures()
 
 
-model, state, teams, raw_all, standings_df, standings_season = load_app_resources()
+model, state, teams, raw_all, standings_df, standings_season, features_all = load_app_resources()
 
 st.title("Premier League Match Outcome Predictor")
 st.markdown(
@@ -535,3 +592,24 @@ with st.expander("Compare against bookmaker odds", expanded=fixture_odds is not 
 if results_table is not None:
     with st.expander("Full results table (held-out test seasons, 2023/24-2025/26)"):
         st.dataframe(results_table)
+
+with st.container(border=True):
+    st.markdown("##### Season schedule: predictions vs. actual results")
+    st.caption(
+        f"Every {CURRENT_SEASON[:2]}/{CURRENT_SEASON[2:]} Premier League match, played and upcoming. "
+        "Already-played matches show what the model predicted beforehand (leakage-safe, computed the "
+        "same way as every prediction above) next to what actually happened, so you can check the "
+        "model's real track record yourself instead of taking the headline accuracy number on faith. "
+        "Upcoming matches show the schedule only: this table is for validating against outcomes that "
+        "already happened, not for forecasting."
+    )
+    season_table = build_season_comparison_table(model, features_all, full_season_df)
+    played_rows = season_table[season_table["Actual result"] != "Not played yet"]
+    scored_rows = played_rows[played_rows["Correct?"] != ""]
+    if not scored_rows.empty:
+        n_correct = (scored_rows["Correct?"] == "Yes").sum()
+        st.metric(
+            f"Accuracy on this season's {len(scored_rows)} played, scored matches",
+            f"{n_correct / len(scored_rows):.0%}",
+        )
+    st.dataframe(season_table, hide_index=True, height=400, width="stretch")
