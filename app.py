@@ -16,7 +16,7 @@ import pandas as pd
 import streamlit as st
 
 from src.config import CURRENT_SEASON, MODELS_DIR, ROOT_DIR, SEASON_CODES
-from src.data import load_raw_matches, load_upcoming_fixtures
+from src.data import load_full_season_fixtures, load_raw_matches, load_upcoming_fixtures
 from src.evaluate import explain_single_match
 from src.features import (
     FEATURE_COLUMNS,
@@ -163,15 +163,25 @@ def head_to_head(raw_all: pd.DataFrame, team_a: str, team_b: str, before_date: p
     return raw_all.loc[mask].sort_values("date", ascending=False).head(n)
 
 
-def lookup_actual_result(raw_all: pd.DataFrame, home_team: str, away_team: str, kickoff: pd.Timestamp) -> dict | None:
+def lookup_actual_result(raw_all: pd.DataFrame, full_season_df: pd.DataFrame,
+                          home_team: str, away_team: str, kickoff: pd.Timestamp) -> dict | None:
     """If this exact fixture has already been played AND its result has
-    synced into the historical results feed (which lags kickoff by a day
-    or so, since football-data.co.uk posts full match stats, not just the
-    scoreline, after the fact), return the actual score. Returns None
-    otherwise, including for matches that clearly did happen but haven't
-    synced yet, since there's nothing honest to show until the data
-    catches up, not even a "check back later" placeholder.
+    synced into one of the two data feeds, return the actual score.
+    full_season_df (openfootball) tends to update faster; raw_all
+    (football-data.co.uk's historical results) is the fallback. Returns
+    None if neither has it yet, since there's nothing honest to show
+    until the data catches up, not even a "check back later" placeholder.
     """
+    fs_match = full_season_df[
+        (full_season_df["home_team"] == home_team) & (full_season_df["away_team"] == away_team)
+        & (full_season_df["kickoff"].dt.date == kickoff.date()) & full_season_df["home_goals"].notna()
+    ]
+    if not fs_match.empty:
+        row = fs_match.iloc[0]
+        hg, ag = int(row["home_goals"]), int(row["away_goals"])
+        result = "H" if hg > ag else ("A" if ag > hg else "D")
+        return {"home_goals": hg, "away_goals": ag, "result": result}
+
     mask = (
         (raw_all["home_team"] == home_team) & (raw_all["away_team"] == away_team)
         & (raw_all["date"].dt.date == kickoff.date())
@@ -281,12 +291,19 @@ def load_results_table():
     return pd.read_csv(path, index_col="model") if path.exists() else None
 
 
-@st.cache_data(ttl=3600, show_spinner="Checking for upcoming Premier League fixtures...")
-def load_fixtures_cached():
-    # Cached for an hour, not forever: unlike historical results, this
-    # genuinely changes (odds move, new fixtures get posted) while the
-    # app process stays up.
+@st.cache_data(ttl=3600, show_spinner="Checking for live bookmaker odds...")
+def load_odds_fixtures_cached():
+    # Cached for an hour, not forever: this genuinely changes (odds move
+    # day to day) while the app process stays up. Only used to enrich the
+    # full-season fixture list with odds when a selected match falls
+    # within its narrow nearest-gameweek window; see load_full_season_fixtures
+    # for the actual list of selectable fixtures.
     return load_upcoming_fixtures()
+
+
+@st.cache_data(ttl=3600, show_spinner="Loading the full season schedule...")
+def load_full_season_fixtures_cached():
+    return load_full_season_fixtures()
 
 
 model, state, teams, raw_all, standings_df, standings_season = load_app_resources()
@@ -313,47 +330,59 @@ if results_table is not None and "bookmaker_baseline" in results_table.index and
         "reasonable estimate to inspect, not a betting edge. See the README for the full analysis."
     )
 
-fixtures_df = load_fixtures_cached()
-# football-data.co.uk's fixtures.csv only ever lists the nearest gameweek's
-# batch (confirmed empirically: it never returns a mix of far-future
-# gameweeks), so there's no need to additionally filter by exact kickoff
-# time here. That earlier `kickoff >= now` filter meant the whole batch
-# vanished the moment its last match kicked off, hours before the next
-# gameweek gets posted, hiding real, valid fixture data for no good reason.
-# Each option still shows its real date/time so already-played matches in
-# the batch are obvious, not hidden.
 now = pd.Timestamp.now()
+
+# football-data.co.uk's fixtures.csv (odds source) only ever lists the
+# nearest gameweek, so it's not useful as the fixture LIST once that
+# gameweek has kicked off. openfootball's full-season schedule (all ~380
+# matches, played and unplayed) is the list source instead; odds get
+# merged in from football-data.co.uk only where the two happen to overlap
+# (in practice: recently-played and imminent matches, since bookmakers
+# don't post odds months ahead).
+odds_fixtures_df = load_odds_fixtures_cached()
+full_season_df = load_full_season_fixtures_cached()
+
+recent_played = full_season_df[(full_season_df["kickoff"] < now) & (full_season_df["kickoff"] >= now - pd.Timedelta(days=4))]
+next_unplayed = full_season_df[(full_season_df["kickoff"] >= now) & full_season_df["home_goals"].isna()].head(10)
+selectable_fixtures = pd.concat([recent_played, next_unplayed]).sort_values("kickoff").reset_index(drop=True)
 
 fixture_odds = None
 with st.container(border=True):
     st.markdown("##### Choose a matchup")
-    if not fixtures_df.empty:
+    if not selectable_fixtures.empty:
         source = st.radio(
             "Matchup source",
-            ["This gameweek's fixture (real date/time)", "Custom (any two teams, hypothetical)"],
+            ["Real fixture (recent + next gameweek)", "Custom (any two teams, hypothetical)"],
             horizontal=True, label_visibility="collapsed",
         )
     else:
         source = "Custom (any two teams, hypothetical)"
         st.caption(
-            "No Premier League fixtures are currently listed by the data source, so only "
-            "the custom matchup mode is available right now."
+            "No Premier League fixture data is currently reachable, so only the custom "
+            "matchup mode is available right now."
         )
 
-    if source.startswith("This gameweek"):
+    if source.startswith("Real fixture"):
         labels = []
-        for r in fixtures_df.itertuples(index=False):
+        for r in selectable_fixtures.itertuples(index=False):
             tag = "" if r.kickoff >= now else " (already played)"
             labels.append(f"{r.home_team} vs {r.away_team}  ·  {r.kickoff.strftime('%a %d %b, %H:%M')}{tag}")
-        picked = st.selectbox("This gameweek's Premier League fixtures", labels)
-        fixture_row = fixtures_df.iloc[labels.index(picked)]
+        default_idx = int((selectable_fixtures["kickoff"] >= now).idxmax()) if (selectable_fixtures["kickoff"] >= now).any() else 0
+        picked = st.selectbox("Real Premier League fixtures", labels, index=default_idx)
+        fixture_row = selectable_fixtures.iloc[labels.index(picked)]
         home_team = fixture_row["home_team"]
         away_team = fixture_row["away_team"]
         match_date = fixture_row["kickoff"]
-        if pd.notna(fixture_row["odds_home"]):
-            fixture_odds = (fixture_row["odds_home"], fixture_row["odds_draw"], fixture_row["odds_away"])
+
+        odds_match = odds_fixtures_df[
+            (odds_fixtures_df["home_team"] == home_team) & (odds_fixtures_df["away_team"] == away_team)
+        ] if not odds_fixtures_df.empty else odds_fixtures_df
+        if not odds_match.empty and pd.notna(odds_match.iloc[0]["odds_home"]):
+            row = odds_match.iloc[0]
+            fixture_odds = (row["odds_home"], row["odds_draw"], row["odds_away"])
+
         st.caption(
-            f"Real fixture from football-data.co.uk. Kickoff: "
+            f"Real fixture, full-season schedule via openfootball. Kickoff: "
             f"{match_date.strftime('%A %d %B %Y, %H:%M')} UK time."
         )
     else:
@@ -384,7 +413,7 @@ top_factor_text = describe_feature(explanation.iloc[0]["feature"], home_team, aw
 
 actual = None
 if pd.Timestamp(match_date) <= pd.Timestamp.now():
-    actual = lookup_actual_result(raw_all, home_team, away_team, pd.Timestamp(match_date))
+    actual = lookup_actual_result(raw_all, full_season_df, home_team, away_team, pd.Timestamp(match_date))
 
 with st.container(border=True):
     st.markdown("##### Prediction")
