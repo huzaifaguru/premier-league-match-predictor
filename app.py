@@ -6,6 +6,8 @@ model that, on held-out historical data, does NOT beat the bookmaker's own
 odds (see the results table below). It's shown as a probability estimate
 worth inspecting, not a betting signal.
 """
+import hashlib
+import html
 import json
 
 import matplotlib.pyplot as plt
@@ -23,6 +25,13 @@ BG_COLOR = "#000000"
 TEXT_COLOR = "#e0e0e0"
 ACCENT_COLOR = "#fdda2b"
 SECONDARY_COLOR = "#2b94fd"
+MUTED_COLOR = "#a0a0a0"
+
+BADGE_PALETTE = [
+    "#fdda2b", "#2b94fd", "#ff6b6b", "#4caf7d",
+    "#b388ff", "#ff9f40", "#40c4c4", "#e0e0e0",
+]
+RESULT_COLORS = {"W": "#4caf7d", "D": "#8a8f8d", "L": "#ff6b6b"}
 
 st.set_page_config(page_title="Premier League Match Predictor", layout="wide")
 
@@ -66,6 +75,115 @@ def _dark_figure(figsize):
     return fig, ax
 
 
+def _team_color(team: str) -> str:
+    # A stable per-team color, not Python's built-in hash() which is
+    # randomized per process and would make badge colors flicker between
+    # app restarts.
+    idx = int(hashlib.md5(team.encode()).hexdigest(), 16) % len(BADGE_PALETTE)
+    return BADGE_PALETTE[idx]
+
+
+def _team_initials(team: str) -> str:
+    words = [w for w in team.replace("'", "").split() if w.lower() != "and"]
+    if len(words) == 1:
+        return words[0][:3].upper()
+    return "".join(w[0] for w in words[:3]).upper()
+
+
+def team_badge_html(team: str, size: int = 40) -> str:
+    color = _team_color(team)
+    initials = _team_initials(team)
+    text_color = "#000000" if color in ("#fdda2b", "#e0e0e0", "#40c4c4", "#ff9f40") else "#ffffff"
+    return (
+        f"<div style='display:inline-flex; align-items:center; justify-content:center; "
+        f"width:{size}px; height:{size}px; border-radius:50%; background:{color}; "
+        f"color:{text_color}; font-weight:700; font-size:{size * 0.34:.0f}px; "
+        f"border:1px solid #ffffff; flex-shrink:0;'>{initials}</div>"
+    )
+
+
+def recent_form(raw_all: pd.DataFrame, team: str, before_date: pd.Timestamp, n: int = 5) -> list[dict]:
+    """Team's last n results (any venue) strictly before `before_date`, most
+    recent last. Used for the form-strip badges, not a model feature."""
+    mask = ((raw_all["home_team"] == team) | (raw_all["away_team"] == team)) & (raw_all["date"] < before_date)
+    matches = raw_all.loc[mask].sort_values("date").tail(n)
+    rows = []
+    for row in matches.itertuples(index=False):
+        is_home = row.home_team == team
+        opponent = row.away_team if is_home else row.home_team
+        team_goals = row.home_goals if is_home else row.away_goals
+        opp_goals = row.away_goals if is_home else row.home_goals
+        if team_goals > opp_goals:
+            outcome = "W"
+        elif team_goals < opp_goals:
+            outcome = "L"
+        else:
+            outcome = "D"
+        rows.append({
+            "opponent": opponent, "venue": "H" if is_home else "A",
+            "score": f"{int(team_goals)}-{int(opp_goals)}", "outcome": outcome,
+        })
+    return rows
+
+
+def form_badges_html(form_rows: list[dict]) -> str:
+    if not form_rows:
+        return f"<span style='color:{MUTED_COLOR};'>No prior matches on record.</span>"
+    chips = []
+    for r in form_rows:
+        color = RESULT_COLORS[r["outcome"]]
+        title = html.escape(f"{r['venue']} vs {r['opponent']}: {r['score']}", quote=True)
+        chips.append(
+            f'<span title="{title}" '
+            f"style='display:inline-flex; align-items:center; justify-content:center; "
+            f"width:26px; height:26px; border-radius:6px; background:{color}; "
+            f"color:#000000; font-weight:700; font-size:12px; margin-right:6px;'>{r['outcome']}</span>"
+        )
+    return "".join(chips)
+
+
+def head_to_head(raw_all: pd.DataFrame, team_a: str, team_b: str, before_date: pd.Timestamp, n: int = 5) -> pd.DataFrame:
+    mask = (
+        ((raw_all["home_team"] == team_a) & (raw_all["away_team"] == team_b))
+        | ((raw_all["home_team"] == team_b) & (raw_all["away_team"] == team_a))
+    ) & (raw_all["date"] < before_date)
+    return raw_all.loc[mask].sort_values("date", ascending=False).head(n)
+
+
+def compute_standings(season_df: pd.DataFrame) -> pd.DataFrame:
+    """A simple points table (3/1/0) from one season's match results, used
+    to show each team's current league position. Not a model feature."""
+    teams = pd.unique(season_df[["home_team", "away_team"]].to_numpy().ravel())
+    rows = {t: {"played": 0, "won": 0, "drawn": 0, "lost": 0, "gf": 0, "ga": 0, "points": 0} for t in teams}
+    for row in season_df.itertuples(index=False):
+        h, a = row.home_team, row.away_team
+        hg, ag = row.home_goals, row.away_goals
+        rows[h]["played"] += 1
+        rows[a]["played"] += 1
+        rows[h]["gf"] += hg
+        rows[h]["ga"] += ag
+        rows[a]["gf"] += ag
+        rows[a]["ga"] += hg
+        if row.result == "H":
+            rows[h]["won"] += 1
+            rows[h]["points"] += 3
+            rows[a]["lost"] += 1
+        elif row.result == "A":
+            rows[a]["won"] += 1
+            rows[a]["points"] += 3
+            rows[h]["lost"] += 1
+        else:
+            rows[h]["drawn"] += 1
+            rows[a]["drawn"] += 1
+            rows[h]["points"] += 1
+            rows[a]["points"] += 1
+    table = pd.DataFrame(rows).T
+    table["gd"] = table["gf"] - table["ga"]
+    table = table.sort_values(["points", "gd", "gf"], ascending=False)
+    table["position"] = range(1, len(table) + 1)
+    return table
+
+
 @st.cache_resource(show_spinner="Loading match history and training the model (first run only, ~30s)...")
 def load_app_resources():
     raw_all = load_raw_matches(seasons=SEASON_CODES + [CURRENT_SEASON])
@@ -80,19 +198,19 @@ def load_app_resources():
     model = CalibratedXGBoostModel(**best_params["xgboost"])
     model.fit(train_features)
 
-    current_teams = sorted(
-        set(raw_all.loc[raw_all["season"] == CURRENT_SEASON, "home_team"])
-        | set(raw_all.loc[raw_all["season"] == CURRENT_SEASON, "away_team"])
-    )
-    if len(current_teams) < 20:
-        # Early in a season, not every team may have played yet, so fall
-        # back to the most recently completed season's roster.
-        last_complete = SEASON_CODES[-1]
-        current_teams = sorted(
-            set(raw_all.loc[raw_all["season"] == last_complete, "home_team"])
-            | set(raw_all.loc[raw_all["season"] == last_complete, "away_team"])
-        )
-    return model, state, current_teams
+    # Same season powers both the team dropdown roster and the standings
+    # table: early in a season (fewer than 20 matches played, roughly one
+    # full gameweek) there isn't enough data for either to be meaningful,
+    # so fall back to the most recently completed season for both.
+    if (raw_all["season"] == CURRENT_SEASON).sum() >= 20:
+        context_season = CURRENT_SEASON
+    else:
+        context_season = SEASON_CODES[-1]
+    context_matches = raw_all[raw_all["season"] == context_season]
+    current_teams = sorted(set(context_matches["home_team"]) | set(context_matches["away_team"]))
+    standings_df = compute_standings(context_matches)
+
+    return model, state, current_teams, raw_all, standings_df, context_season
 
 
 @st.cache_data
@@ -101,7 +219,7 @@ def load_results_table():
     return pd.read_csv(path, index_col="model") if path.exists() else None
 
 
-model, state, teams = load_app_resources()
+model, state, teams, raw_all, standings_df, standings_season = load_app_resources()
 
 st.title("Premier League Match Outcome Predictor")
 st.markdown(
@@ -140,6 +258,46 @@ feat = state.snapshot(home_team, away_team, pd.Timestamp(match_date))
 X_row = pd.DataFrame([feat])[FEATURE_COLUMNS]
 proba = model.predict_proba(X_row)[0]
 pred_idx = int(proba.argmax())
+
+with st.container(border=True):
+    st.markdown("##### Team comparison")
+    bcol1, bcol2 = st.columns(2)
+    for col, team, side in [(bcol1, home_team, "home"), (bcol2, away_team, "away")]:
+        with col:
+            st.markdown(
+                f"<div style='display:flex; align-items:center; gap:10px;'>"
+                f"{team_badge_html(team)}<div><strong>{team}</strong><br>"
+                f"<span style='color:{MUTED_COLOR}; font-size:13px;'>{side.capitalize()}</span></div></div>",
+                unsafe_allow_html=True,
+            )
+            st.write("")
+            if team in standings_df.index:
+                s = standings_df.loc[team]
+                st.caption(
+                    f"League position: #{int(s['position'])} of {len(standings_df)} ({standings_season}) "
+                    f"· {int(s['points'])} pts · {int(s['won'])}W {int(s['drawn'])}D {int(s['lost'])}L "
+                    f"· GD {int(s['gd']):+d}"
+                )
+            else:
+                st.caption(f"Not in the {standings_season} table (promoted or unavailable).")
+            elo_val = feat["elo_home_pre" if side == "home" else "elo_away_pre"]
+            st.caption(f"Elo rating: {elo_val:.0f}")
+            st.markdown("Last 5 results (oldest to newest):", help="Hover a badge for the opponent and score.")
+            st.markdown(form_badges_html(recent_form(raw_all, team, pd.Timestamp(match_date))), unsafe_allow_html=True)
+
+with st.container(border=True):
+    st.markdown(f"##### Head-to-head: {home_team} vs {away_team}")
+    h2h = head_to_head(raw_all, home_team, away_team, pd.Timestamp(match_date))
+    if h2h.empty:
+        st.caption("No previous meetings on record in this dataset (2010/11 onward).")
+    else:
+        display_h2h = pd.DataFrame({
+            "Date": h2h["date"].dt.strftime("%Y-%m-%d"),
+            "Home": h2h["home_team"],
+            "Score": h2h["home_goals"].astype(int).astype(str) + " - " + h2h["away_goals"].astype(int).astype(str),
+            "Away": h2h["away_team"],
+        })
+        st.table(display_h2h.set_index("Date"))
 
 with st.container(border=True):
     st.markdown("##### Predicted probabilities")
