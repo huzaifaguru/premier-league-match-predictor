@@ -18,7 +18,14 @@ import streamlit as st
 from src.config import CURRENT_SEASON, MODELS_DIR, ROOT_DIR, SEASON_CODES
 from src.data import load_raw_matches, load_upcoming_fixtures
 from src.evaluate import explain_single_match
-from src.features import FEATURE_COLUMNS, build_feature_table, describe_feature
+from src.features import (
+    FEATURE_COLUMNS,
+    STAT_DESCRIPTIONS,
+    build_feature_table,
+    describe_feature,
+    form_scope_text,
+    parse_feature_name,
+)
 from src.train import CLASSES, CalibratedXGBoostModel
 
 CLASS_LABELS = {"H": "Home Win", "D": "Draw", "A": "Away Win"}
@@ -154,6 +161,55 @@ def head_to_head(raw_all: pd.DataFrame, team_a: str, team_b: str, before_date: p
         | ((raw_all["home_team"] == team_b) & (raw_all["away_team"] == team_a))
     ) & (raw_all["date"] < before_date)
     return raw_all.loc[mask].sort_values("date", ascending=False).head(n)
+
+
+def lookup_actual_result(raw_all: pd.DataFrame, home_team: str, away_team: str, kickoff: pd.Timestamp) -> dict | None:
+    """If this exact fixture has already been played AND its result has
+    synced into the historical results feed (which lags kickoff by a day
+    or so, since football-data.co.uk posts full match stats, not just the
+    scoreline, after the fact), return the actual score. Returns None
+    otherwise, including for matches that clearly did happen but haven't
+    synced yet, since there's nothing honest to show until the data
+    catches up, not even a "check back later" placeholder.
+    """
+    mask = (
+        (raw_all["home_team"] == home_team) & (raw_all["away_team"] == away_team)
+        & (raw_all["date"].dt.date == kickoff.date())
+    )
+    matches = raw_all.loc[mask]
+    if matches.empty:
+        return None
+    row = matches.iloc[0]
+    return {"home_goals": int(row["home_goals"]), "away_goals": int(row["away_goals"]), "result": row["result"]}
+
+
+def chart_label(feature_name: str, home_team: str, away_team: str) -> str:
+    """Short, team-specific y-axis label for the SHAP chart. The raw
+    feature names (and even the default English descriptions) use generic
+    home/away roles, which is ambiguous at a glance: a reader has to
+    separately remember which selected team is playing which role in this
+    specific matchup. Substituting the real team names removes that step.
+    """
+    special = {
+        "elo_diff": f"Elo gap ({home_team} vs {away_team})",
+        "elo_home_pre": f"{home_team}'s Elo rating",
+        "elo_away_pre": f"{away_team}'s Elo rating",
+        "rest_days_home": f"{home_team}: rest days",
+        "rest_days_away": f"{away_team}: rest days",
+    }
+    if feature_name in special:
+        return special[feature_name]
+
+    parsed = parse_feature_name(feature_name)
+    if not parsed:
+        return feature_name
+    side, form_type, window, stat = parsed
+    team = home_team if side == "home" else away_team
+    scope = form_scope_text(form_type, window).replace(", home or away", "").replace(" matches", "")
+    if stat == "n":
+        return f"{team} ({scope}): # matches in average"
+    stat_label = STAT_DESCRIPTIONS.get(stat, stat.replace("_", " "))
+    return f"{team} ({scope}): {stat_label}"
 
 
 def compute_standings(season_df: pd.DataFrame) -> pd.DataFrame:
@@ -324,16 +380,28 @@ if predicted_class == "D":
 else:
     headline = f"{home_team if predicted_class == 'H' else away_team} to win"
 
-top_factor_text = describe_feature(explanation.iloc[0]["feature"])
-top_factor_text = top_factor_text[0].lower() + top_factor_text[1:]
+top_factor_text = describe_feature(explanation.iloc[0]["feature"], home_team, away_team)
+
+actual = None
+if pd.Timestamp(match_date) <= pd.Timestamp.now():
+    actual = lookup_actual_result(raw_all, home_team, away_team, pd.Timestamp(match_date))
 
 with st.container(border=True):
     st.markdown("##### Prediction")
     st.markdown(f"# {headline}")
-    st.markdown(
-        f"Model confidence: **{confidence:.0%}**. The single biggest factor behind this "
-        f"prediction is {top_factor_text}"
-    )
+    st.markdown(f"Model confidence: **{confidence:.0%}**.")
+    st.markdown(f"Single biggest factor: {top_factor_text}")
+    if actual is not None:
+        correct = actual["result"] == predicted_class
+        st.markdown(
+            f"**Actual result:** {home_team} {actual['home_goals']} - {actual['away_goals']} {away_team}. "
+            f"This pre-match prediction was **{'correct' if correct else 'incorrect'}**."
+        )
+    elif pd.Timestamp(match_date) <= pd.Timestamp.now():
+        st.caption(
+            "This match has already been played, but its result hasn't synced into the "
+            "historical data feed yet (that usually lags kickoff by about a day)."
+        )
     prob_df = pd.DataFrame({
         "Outcome": [CLASS_LABELS[c] for c in CLASSES],
         "Probability": proba,
@@ -387,16 +455,18 @@ with st.container(border=True):
 
 with st.container(border=True):
     st.markdown(f"##### Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
+    st.caption(f"Every bar below is labeled with the specific team it refers to: {home_team} (home) or {away_team} (away).")
+    labels = [chart_label(f, home_team, away_team) for f in explanation["feature"]]
     fig, ax = _dark_figure(figsize=(8, 4))
     colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
-    ax.barh(explanation["feature"][::-1], explanation["shap_value"][::-1], color=colors)
+    ax.barh(labels[::-1], explanation["shap_value"][::-1], color=colors)
     ax.set_xlabel(f"SHAP value (positive bars push toward '{CLASS_LABELS[CLASSES[pred_idx]]}', negative bars push away from it)")
     fig.tight_layout()
     st.pyplot(fig)
 
-    with st.expander("Factor key: what these labels mean", expanded=True):
-        for feature_name in explanation["feature"]:
-            st.markdown(f"**`{feature_name}`**: {describe_feature(feature_name)}")
+    with st.expander("Factor key: full detail on each factor", expanded=True):
+        for feature_name, label in zip(explanation["feature"], labels):
+            st.markdown(f"**{label}** (`{feature_name}`): {describe_feature(feature_name, home_team, away_team)}")
 
 with st.expander("Raw feature snapshot used for this prediction"):
     summary_rows = []

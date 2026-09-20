@@ -221,36 +221,63 @@ STAT_DESCRIPTIONS = {
     "corners_against": "corners conceded",
 }
 
-_SPECIAL_FEATURE_DESCRIPTIONS = {
-    "elo_diff": "The gap between the two teams' Elo strength ratings, with home advantage already added in. The single biggest driver of every prediction.",
-    "elo_home_pre": "The home team's Elo rating going into this match.",
-    "elo_away_pre": "The away team's Elo rating going into this match.",
-    "rest_days_home": "Days since the home team's previous match.",
-    "rest_days_away": "Days since the away team's previous match.",
-}
-
 _FEATURE_NAME_PATTERN = re.compile(r"^(home|away)_(form|homeform|awayform)(\d+)_(.+)$")
 
 
-def describe_feature(name: str) -> str:
+def parse_feature_name(name: str) -> tuple[str, str, str, str] | None:
+    """Break a FEATURE_COLUMNS rolling-form name into (side, form_type,
+    window, stat), e.g. "home_homeform5_shots_for" -> ("home", "homeform",
+    "5", "shots_for"). Returns None for names that don't follow this
+    pattern (the Elo/rest-day features, handled separately since there are
+    only five of them and each needs its own wording).
+    """
+    match = _FEATURE_NAME_PATTERN.match(name)
+    return match.groups() if match else None
+
+
+def form_scope_text(form_type: str, window: str) -> str:
+    if form_type == "form":
+        return f"last {window} matches, home or away"
+    if form_type == "homeform":
+        return f"last {window} home matches"
+    return f"last {window} away matches"
+
+
+def describe_feature(name: str, home_team: str | None = None, away_team: str | None = None) -> str:
     """Plain-English description of a FEATURE_COLUMNS entry, used to build
     a factor legend in the Streamlit app so a reader doesn't have to guess
-    what e.g. 'home_homeform5_shots_target_for' means."""
-    if name in _SPECIAL_FEATURE_DESCRIPTIONS:
-        return _SPECIAL_FEATURE_DESCRIPTIONS[name]
+    what e.g. 'home_homeform5_shots_target_for' means.
 
-    match = _FEATURE_NAME_PATTERN.match(name)
-    if not match:
+    Pass home_team/away_team to name the actual teams instead of the
+    generic "home team"/"away team" roles. Without them, a reader has to
+    separately remember which selected team is playing which role in this
+    specific matchup, which is exactly the ambiguity that made the chart
+    confusing before this was added.
+    """
+    home_label = f"{home_team}'s" if home_team else "The home team's"
+    away_label = f"{away_team}'s" if away_team else "The away team's"
+
+    special = {
+        "elo_diff": (
+            f"The Elo rating gap between {home_team} and {away_team}"
+            if home_team and away_team else
+            "The gap between the two teams' Elo strength ratings"
+        ) + ", with home advantage already added in. The single biggest driver of every prediction.",
+        "elo_home_pre": f"{home_label} Elo rating going into this match.",
+        "elo_away_pre": f"{away_label} Elo rating going into this match.",
+        "rest_days_home": f"Days since {home_team}'s previous match." if home_team else "Days since the home team's previous match.",
+        "rest_days_away": f"Days since {away_team}'s previous match." if away_team else "Days since the away team's previous match.",
+    }
+    if name in special:
+        return special[name]
+
+    parsed = parse_feature_name(name)
+    if not parsed:
         return name
 
-    side, form_type, window, stat = match.groups()
-    side_label = "Home team's" if side == "home" else "Away team's"
-    if form_type == "form":
-        scope = f"last {window} matches, home or away"
-    elif form_type == "homeform":
-        scope = f"last {window} home matches"
-    else:
-        scope = f"last {window} away matches"
+    side, form_type, window, stat = parsed
+    side_label = home_label if side == "home" else away_label
+    scope = form_scope_text(form_type, window)
 
     if stat == "n":
         return f"{side_label} number of matches this average is based on (fewer than {window} early in a team's history)."
