@@ -20,9 +20,3 @@ models/*.joblib
 .pytest_cache/
 .coverage
 
-# Optional local crest images (see assets/crests/README.md): gitignored by
-# default so dropping files in for local testing doesn't silently commit
-# copyrighted artwork. Remove this line yourself if you've decided to
-# commit them.
-assets/crests/*
-!assets/crests/README.md
