@@ -92,14 +92,19 @@ def _team_initials(team: str) -> str:
 
 
 def team_badge_html(team: str, size: int = 40) -> str:
+    # A generic shield silhouette (not any real club's actual crest design)
+    # reads as "team badge" at a glance without using trademarked club
+    # artwork. See the code comment above BADGE_PALETTE / the project
+    # README for why real crests aren't pulled in.
     color = _team_color(team)
     initials = _team_initials(team)
     text_color = "#000000" if color in ("#fdda2b", "#e0e0e0", "#40c4c4", "#ff9f40") else "#ffffff"
     return (
         f"<div style='display:inline-flex; align-items:center; justify-content:center; "
-        f"width:{size}px; height:{size}px; border-radius:50%; background:{color}; "
-        f"color:{text_color}; font-weight:700; font-size:{size * 0.34:.0f}px; "
-        f"border:1px solid #ffffff; flex-shrink:0;'>{initials}</div>"
+        f"width:{size}px; height:{size * 1.15:.0f}px; background:{color}; "
+        f"clip-path: polygon(0% 0%, 100% 0%, 100% 62%, 50% 100%, 0% 62%); "
+        f"color:{text_color}; font-weight:700; font-size:{size * 0.32:.0f}px; "
+        f"padding-bottom:{size * 0.12:.0f}px; flex-shrink:0;'>{initials}</div>"
     )
 
 
@@ -253,32 +258,39 @@ if results_table is not None and "bookmaker_baseline" in results_table.index and
     )
 
 fixtures_df = load_fixtures_cached()
-upcoming = fixtures_df[fixtures_df["kickoff"] >= pd.Timestamp.now()] if not fixtures_df.empty else fixtures_df
+# football-data.co.uk's fixtures.csv only ever lists the nearest gameweek's
+# batch (confirmed empirically: it never returns a mix of far-future
+# gameweeks), so there's no need to additionally filter by exact kickoff
+# time here. That earlier `kickoff >= now` filter meant the whole batch
+# vanished the moment its last match kicked off, hours before the next
+# gameweek gets posted, hiding real, valid fixture data for no good reason.
+# Each option still shows its real date/time so already-played matches in
+# the batch are obvious, not hidden.
+now = pd.Timestamp.now()
 
 fixture_odds = None
 with st.container(border=True):
     st.markdown("##### Choose a matchup")
-    if not upcoming.empty:
+    if not fixtures_df.empty:
         source = st.radio(
             "Matchup source",
-            ["Upcoming fixture (real date/time)", "Custom (any two teams, hypothetical)"],
+            ["This gameweek's fixture (real date/time)", "Custom (any two teams, hypothetical)"],
             horizontal=True, label_visibility="collapsed",
         )
     else:
         source = "Custom (any two teams, hypothetical)"
         st.caption(
-            "No upcoming Premier League fixtures are currently listed by the data source "
-            "(football-data.co.uk publishes roughly one gameweek at a time), so only the "
-            "custom matchup mode is available right now."
+            "No Premier League fixtures are currently listed by the data source, so only "
+            "the custom matchup mode is available right now."
         )
 
-    if source.startswith("Upcoming"):
-        labels = [
-            f"{r.home_team} vs {r.away_team}  ·  {r.kickoff.strftime('%a %d %b, %H:%M')}"
-            for r in upcoming.itertuples(index=False)
-        ]
-        picked = st.selectbox("Upcoming Premier League fixture", labels)
-        fixture_row = upcoming.iloc[labels.index(picked)]
+    if source.startswith("This gameweek"):
+        labels = []
+        for r in fixtures_df.itertuples(index=False):
+            tag = "" if r.kickoff >= now else " (already played)"
+            labels.append(f"{r.home_team} vs {r.away_team}  ·  {r.kickoff.strftime('%a %d %b, %H:%M')}{tag}")
+        picked = st.selectbox("This gameweek's Premier League fixtures", labels)
+        fixture_row = fixtures_df.iloc[labels.index(picked)]
         home_team = fixture_row["home_team"]
         away_team = fixture_row["away_team"]
         match_date = fixture_row["kickoff"]
