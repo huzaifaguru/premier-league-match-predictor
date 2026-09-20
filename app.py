@@ -72,6 +72,17 @@ st.markdown(
     button, input, select, [data-baseweb="select"], [data-testid="stExpander"] summary {
         transition: all 250ms ease !important;
     }
+    /* Body text (captions, explanatory paragraphs) reads better at a
+       constrained line length than the full 1300px wide-layout container;
+       headings, tables and charts are left full-width. */
+    [data-testid="stMarkdownContainer"] p, [data-testid="stCaptionContainer"] p {
+        max-width: 800px;
+    }
+    /* Odds inputs only hold a 1-2 digit decimal; the default column width
+       leaves a wide gap between the value and the +/- steppers. */
+    [data-testid="stNumberInput"] {
+        max-width: 160px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -335,7 +346,9 @@ def build_season_comparison_table(_model, features_all: pd.DataFrame, full_seaso
             m = match.iloc[0]
             row["Predicted"] = CLASS_LABELS[m["predicted_class"]]
             row["Confidence"] = f"{m['confidence']:.0%}"
-            row["Correct?"] = "Yes" if m["predicted_class"] == m["result"] else "No"
+            # Icon + text, not color alone: scannable at a glance and still
+            # readable/announced correctly without relying on color.
+            row["Correct?"] = "✅ Yes" if m["predicted_class"] == m["result"] else "❌ No"
         else:
             # Played, but not synced into the leakage-safe feature table yet
             # (same lag as the single-match lookup_actual_result()).
@@ -584,33 +597,6 @@ with st.container(border=True):
         })
         st.table(display_h2h.set_index("Date"))
 
-with st.container(border=True):
-    st.header(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction", anchor=False)
-    st.caption(f"Every bar below is labeled with the specific team it refers to: {home_team} (home) or {away_team} (away).")
-    labels = [chart_label(f, home_team, away_team) for f in explanation["feature"]]
-    fig, ax = _dark_figure(figsize=(8, 4))
-    colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
-    ax.barh(labels[::-1], explanation["shap_value"][::-1], color=colors)
-    ax.set_xlabel(f"SHAP value (positive bars push toward '{CLASS_LABELS[CLASSES[pred_idx]]}', negative bars push away from it)")
-    fig.tight_layout()
-    st.pyplot(fig)
-
-    with st.expander("Factor key: full detail on each factor", expanded=True):
-        for feature_name, label in zip(explanation["feature"], labels):
-            st.markdown(f"**{label}** (`{feature_name}`): {describe_feature(feature_name, home_team, away_team)}")
-
-with st.expander("Raw feature snapshot used for this prediction"):
-    summary_rows = []
-    for side, team in [("Home", home_team), ("Away", away_team)]:
-        summary_rows.append({
-            "Team": f"{team} ({side})",
-            "Elo": f"{feat['elo_home_pre' if side == 'Home' else 'elo_away_pre']:.0f}",
-            "Last 5 goals for/against": f"{feat[f'{side.lower()}_form5_goals_for']:.2f} / {feat[f'{side.lower()}_form5_goals_against']:.2f}",
-            "Last 5 shots on target for/against": f"{feat[f'{side.lower()}_form5_shots_target_for']:.2f} / {feat[f'{side.lower()}_form5_shots_target_against']:.2f}",
-            "Rest days": feat[f"rest_days_{side.lower()}"],
-        })
-    st.table(pd.DataFrame(summary_rows).set_index("Team"))
-
 with st.expander("Compare against bookmaker odds", expanded=fixture_odds is not None):
     st.caption(
         "This only builds the market-comparison chart below. It doesn't change the model's own "
@@ -638,43 +624,78 @@ with st.expander("Compare against bookmaker odds", expanded=fixture_odds is not 
         }, index=[CLASS_LABELS[c] for c in CLASSES])
         st.bar_chart(compare_df, horizontal=True, color=[ACCENT_COLOR, SECONDARY_COLOR])
 
-if results_table is not None:
-    with st.expander("Full results table (held-out test seasons, 2023/24-2025/26)"):
-        st.dataframe(results_table)
-
 with st.container(border=True):
-    st.header("Season schedule: predictions vs. actual results", anchor=False)
+    st.header("Model details", anchor=False)
     st.caption(
-        f"Every {CURRENT_SEASON[:2]}/{CURRENT_SEASON[2:]} Premier League match, played and upcoming. "
-        "Already-played matches show what the model predicted beforehand (leakage-safe, computed the "
-        "same way as every prediction above) next to what actually happened, so you can check the "
-        "model's real track record yourself instead of taking the headline accuracy number on faith. "
-        "Upcoming matches show the schedule only: this table is for validating against outcomes that "
-        "already happened, not for forecasting."
+        "Everything below is for people who want to inspect how the model actually works: why it made "
+        "this specific pick, what data it saw, and how it performs across whole seasons. Not needed to "
+        "use the predictor above."
     )
-    season_table = build_season_comparison_table(model, features_all, full_season_df)
-    played_rows = season_table[season_table["Actual result"] != "Not played yet"]
-    scored_rows = played_rows[played_rows["Correct?"] != ""]
-    if not scored_rows.empty:
-        n_correct = (scored_rows["Correct?"] == "Yes").sum()
-        home_goals = scored_rows["Actual result"].str.split(" - ").str[0].astype(int)
-        away_goals = scored_rows["Actual result"].str.split(" - ").str[1].astype(int)
-        n_actual_draws = int((home_goals == away_goals).sum())
-        n_predicted_draws = int((scored_rows["Predicted"] == "Draw").sum())
+    show_model_details = st.toggle("Show model details", value=False)
 
-        mcol1, mcol2 = st.columns(2)
-        mcol1.metric(
-            f"Accuracy on this season's {len(scored_rows)} played, scored matches",
-            f"{n_correct / len(scored_rows):.0%}",
+    if show_model_details:
+        st.subheader(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction", anchor=False)
+        st.caption(f"Every bar below is labeled with the specific team it refers to: {home_team} (home) or {away_team} (away).")
+        labels = [chart_label(f, home_team, away_team) for f in explanation["feature"]]
+        fig, ax = _dark_figure(figsize=(8, 4))
+        colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
+        ax.barh(labels[::-1], explanation["shap_value"][::-1], color=colors)
+        ax.set_xlabel(f"SHAP value (positive bars push toward '{CLASS_LABELS[CLASSES[pred_idx]]}', negative bars push away from it)")
+        fig.tight_layout()
+        st.pyplot(fig)
+
+        with st.expander("Factor key: full detail on each factor", expanded=True):
+            for feature_name, label in zip(explanation["feature"], labels):
+                st.markdown(f"**{label}** (`{feature_name}`): {describe_feature(feature_name, home_team, away_team)}")
+
+        with st.expander("Raw feature snapshot used for this prediction"):
+            summary_rows = []
+            for side, team in [("Home", home_team), ("Away", away_team)]:
+                summary_rows.append({
+                    "Team": f"{team} ({side})",
+                    "Elo": f"{feat['elo_home_pre' if side == 'Home' else 'elo_away_pre']:.0f}",
+                    "Last 5 goals for/against": f"{feat[f'{side.lower()}_form5_goals_for']:.2f} / {feat[f'{side.lower()}_form5_goals_against']:.2f}",
+                    "Last 5 shots on target for/against": f"{feat[f'{side.lower()}_form5_shots_target_for']:.2f} / {feat[f'{side.lower()}_form5_shots_target_against']:.2f}",
+                    "Rest days": feat[f"rest_days_{side.lower()}"],
+                })
+            st.table(pd.DataFrame(summary_rows).set_index("Team"))
+
+        if results_table is not None:
+            st.subheader("Full results table (held-out test seasons, 2023/24-2025/26)", anchor=False)
+            st.dataframe(results_table)
+
+        st.subheader("Season schedule: predictions vs. actual results", anchor=False)
+        st.caption(
+            f"Every {CURRENT_SEASON[:2]}/{CURRENT_SEASON[2:]} Premier League match, played and upcoming. "
+            "Already-played matches show what the model predicted beforehand (leakage-safe, computed the "
+            "same way as every prediction above) next to what actually happened, so you can check the "
+            "model's real track record yourself instead of taking the headline accuracy number on faith. "
+            "Upcoming matches show the schedule only: this table is for validating against outcomes that "
+            "already happened, not for forecasting."
         )
-        mcol2.metric(f"Actual draws vs. predicted draws (of {len(scored_rows)})", f"{n_actual_draws} vs. {n_predicted_draws}")
-        if n_actual_draws > 0 and n_predicted_draws == 0:
-            st.caption(
-                f"Notice the model predicted **zero** draws even though {n_actual_draws} actually "
-                "happened. This isn't a bug: it's the same 'draws are hard' finding from the offline "
-                "evaluation (see the README). A draw is rarely the single most-likely outcome for any "
-                "given match, even when it has a real, meaningful probability, so an argmax classifier "
-                "almost never picks it. The model's *probabilities* do carry draw information; what "
-                "you're seeing here is a limitation of collapsing those probabilities down to one pick."
+        season_table = build_season_comparison_table(model, features_all, full_season_df)
+        played_rows = season_table[season_table["Actual result"] != "Not played yet"]
+        scored_rows = played_rows[played_rows["Correct?"] != ""]
+        if not scored_rows.empty:
+            n_correct = scored_rows["Correct?"].str.endswith("Yes").sum()
+            home_goals = scored_rows["Actual result"].str.split(" - ").str[0].astype(int)
+            away_goals = scored_rows["Actual result"].str.split(" - ").str[1].astype(int)
+            n_actual_draws = int((home_goals == away_goals).sum())
+            n_predicted_draws = int((scored_rows["Predicted"] == "Draw").sum())
+
+            mcol1, mcol2 = st.columns(2)
+            mcol1.metric(
+                f"Accuracy on this season's {len(scored_rows)} played, scored matches",
+                f"{n_correct / len(scored_rows):.0%}",
             )
-    st.dataframe(season_table, hide_index=True, height=400, width="stretch")
+            mcol2.metric(f"Actual draws vs. predicted draws (of {len(scored_rows)})", f"{n_actual_draws} vs. {n_predicted_draws}")
+            if n_actual_draws > 0 and n_predicted_draws == 0:
+                st.caption(
+                    f"Notice the model predicted **zero** draws even though {n_actual_draws} actually "
+                    "happened. This isn't a bug: it's the same 'draws are hard' finding from the offline "
+                    "evaluation (see the README). A draw is rarely the single most-likely outcome for any "
+                    "given match, even when it has a real, meaningful probability, so an argmax classifier "
+                    "almost never picks it. The model's *probabilities* do carry draw information; what "
+                    "you're seeing here is a limitation of collapsing those probabilities down to one pick."
+                )
+        st.dataframe(season_table, hide_index=True, height=400, width="stretch")
