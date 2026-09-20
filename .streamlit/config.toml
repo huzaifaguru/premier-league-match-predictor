@@ -1,12 +1,12 @@
 [theme]
 base = "dark"
-primaryColor = "#fdda2b"
+primaryColor = "#b43cb4"
 backgroundColor = "#000000"
-secondaryBackgroundColor = "#3e4342"
-textColor = "#e0e0e0"
+secondaryBackgroundColor = "#353f51"
+textColor = "#ffffff"
 font = "sans serif"
 baseFontSize = 16
 baseFontWeight = 400
-baseRadius = "7px"
+baseRadius = "8px"
 borderColor = "#ffffff"
 showWidgetBorder = true
