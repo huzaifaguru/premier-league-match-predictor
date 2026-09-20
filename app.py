@@ -546,20 +546,35 @@ with st.container(border=True):
             "This match has already been played, but its result hasn't synced into the "
             "historical data feed yet (that usually lags kickoff by about a day)."
         )
-    prob_df = pd.DataFrame({
-        "Outcome": [CLASS_LABELS[c] for c in CLASSES],
-        "Probability": proba,
-    }).set_index("Outcome")
-    pcol, mcol = st.columns([2, 1])
-    with pcol:
-        st.bar_chart(prob_df, horizontal=True, color=ACCENT_COLOR)
-    with mcol:
-        for c, p in zip(CLASSES, proba):
-            st.metric(CLASS_LABELS[c], f"{p:.1%}")
+    # A custom bar (not st.bar_chart) so each percentage can be printed right
+    # at its own bar's end: with a shared 0-1 axis, a separate metrics
+    # column left the number stranded far from short bars (a low-probability
+    # outcome's bar barely leaves the y-axis while its number sits all the
+    # way over in a fixed-position column), breaking the visual link between
+    # a value and the bar it belongs to.
+    outcomes = [CLASS_LABELS[c] for c in CLASSES]
+    fig, ax = _dark_figure(figsize=(8, 3))
+    bar_colors = [ACCENT_COLOR if c == predicted_class else SECONDARY_COLOR for c in CLASSES]
+    ax.barh(outcomes, proba, color=bar_colors)
+    ax.set_xlim(0, 1)
+    ax.set_xticks([])
+    for spine in ("top", "right", "bottom"):
+        ax.spines[spine].set_visible(False)
+    for i, p in enumerate(proba):
+        label_x, ha, color = p + 0.02, "left", TEXT_COLOR
+        if label_x > 0.9:
+            label_x, ha, color = p - 0.02, "right", BG_COLOR
+        ax.text(label_x, i, f"{p:.1%}", va="center", ha=ha, color=color, fontweight="bold", fontsize=12)
+    fig.tight_layout()
+    st.pyplot(fig)
 
 with st.container(border=True):
     st.header("Team comparison", anchor=False)
-    bcol1, bcol2 = st.columns(2)
+    # Side spacer columns pull the two team blocks in from the wide-layout
+    # container's edges: each block's content (crest, name, badges) is far
+    # narrower than a half-width column and left-aligns within it, so a
+    # plain 50/50 split left a large empty void between the two teams.
+    _, bcol1, bcol2, _ = st.columns([1, 3, 3, 1])
     for col, team, side in [(bcol1, home_team, "home"), (bcol2, away_team, "away")]:
         with col:
             st.markdown(
