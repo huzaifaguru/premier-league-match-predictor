@@ -7,9 +7,11 @@ model that, on held-out historical data, does NOT beat the bookmaker's own
 odds (see the results table below). It's shown as a probability estimate
 worth inspecting, not a betting signal.
 """
+import base64
 import hashlib
 import html
 import json
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -41,6 +43,15 @@ BADGE_PALETTE = [
     "#b388ff", "#ff9f40", "#40c4c4", "#e0e0e0",
 ]
 RESULT_COLORS = {"W": "#4caf7d", "D": "#8a8f8d", "L": "#ff6b6b"}
+
+# Optional real crest images: this app deliberately does not fetch or ship
+# any club artwork itself (see README for why). If you want real crests
+# instead of the generated shield badges, drop image files here yourself,
+# named <slug>.png/.svg/.jpg/.webp using _team_slug(team) below (e.g.
+# "Nott'm Forest" -> "nottm_forest.png"). Any team without a matching file
+# just keeps using the generated badge, nothing else changes.
+CRESTS_DIR = ROOT_DIR / "assets" / "crests"
+_CREST_MIME = {"png": "image/png", "svg": "image/svg+xml", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
 
 st.set_page_config(page_title="Premier League Match Predictor", layout="wide")
 
@@ -99,11 +110,36 @@ def _team_initials(team: str) -> str:
     return "".join(w[0] for w in words[:3]).upper()
 
 
+def _team_slug(team: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", team.lower()).strip("_")
+
+
+@st.cache_data
+def _load_crest_data_uri(team: str) -> str | None:
+    """A base64 data URI for a locally-provided crest image, or None if no
+    file exists for this team. Data URI (not a file path/URL) so it embeds
+    directly in the markdown HTML with no separate static-file serving to
+    configure."""
+    slug = _team_slug(team)
+    for ext, mime in _CREST_MIME.items():
+        path = CRESTS_DIR / f"{slug}.{ext}"
+        if path.exists():
+            return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    return None
+
+
 def team_badge_html(team: str, size: int = 40) -> str:
-    # A generic shield silhouette (not any real club's actual crest design)
-    # reads as "team badge" at a glance without using trademarked club
-    # artwork. See the code comment above BADGE_PALETTE / the project
-    # README for why real crests aren't pulled in.
+    crest_uri = _load_crest_data_uri(team)
+    if crest_uri:
+        return (
+            f"<img src='{crest_uri}' alt='{html.escape(team)} crest' "
+            f"style='width:{size}px; height:{size}px; object-fit:contain; flex-shrink:0;' />"
+        )
+
+    # Fallback: a generic shield silhouette (not any real club's actual
+    # crest design) reads as "team badge" at a glance without using
+    # trademarked club artwork. See CRESTS_DIR above / the README for why
+    # real crests aren't fetched automatically.
     color = _team_color(team)
     initials = _team_initials(team)
     text_color = "#000000" if color in ("#fdda2b", "#e0e0e0", "#40c4c4", "#ff9f40") else "#ffffff"
@@ -608,8 +644,24 @@ with st.container(border=True):
     scored_rows = played_rows[played_rows["Correct?"] != ""]
     if not scored_rows.empty:
         n_correct = (scored_rows["Correct?"] == "Yes").sum()
-        st.metric(
+        home_goals = scored_rows["Actual result"].str.split(" - ").str[0].astype(int)
+        away_goals = scored_rows["Actual result"].str.split(" - ").str[1].astype(int)
+        n_actual_draws = int((home_goals == away_goals).sum())
+        n_predicted_draws = int((scored_rows["Predicted"] == "Draw").sum())
+
+        mcol1, mcol2 = st.columns(2)
+        mcol1.metric(
             f"Accuracy on this season's {len(scored_rows)} played, scored matches",
             f"{n_correct / len(scored_rows):.0%}",
         )
+        mcol2.metric(f"Actual draws vs. predicted draws (of {len(scored_rows)})", f"{n_actual_draws} vs. {n_predicted_draws}")
+        if n_actual_draws > 0 and n_predicted_draws == 0:
+            st.caption(
+                f"Notice the model predicted **zero** draws even though {n_actual_draws} actually "
+                "happened. This isn't a bug: it's the same 'draws are hard' finding from the offline "
+                "evaluation (see the README). A draw is rarely the single most-likely outcome for any "
+                "given match, even when it has a real, meaningful probability, so an argmax classifier "
+                "almost never picks it. The model's *probabilities* do carry draw information; what "
+                "you're seeing here is a limitation of collapsing those probabilities down to one pick."
+            )
     st.dataframe(season_table, hide_index=True, height=400, width="stretch")

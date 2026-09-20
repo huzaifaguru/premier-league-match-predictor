@@ -5,12 +5,12 @@ venv/
 .ipynb_checkpoints/
 .claude/
 
-# raw/processed data is re-downloadable/re-buildable — don't version it
+# raw/processed data is re-downloadable/re-buildable, no need to version it
 data/raw/*.csv
 data/processed/*.parquet
 data/processed/*.csv
 
-# local artifacts — serialized model binaries only; best_params.json and
+# local artifacts: serialized model binaries only. best_params.json and
 # the *_tuning_results.csv files are small, human-readable, and are the
 # actual evidence behind the README's hyperparameter claims, so they're
 # versioned rather than ignored.
@@ -19,3 +19,10 @@ models/*.pkl
 models/*.joblib
 .pytest_cache/
 .coverage
+
+# Optional local crest images (see assets/crests/README.md): gitignored by
+# default so dropping files in for local testing doesn't silently commit
+# copyrighted artwork. Remove this line yourself if you've decided to
+# commit them.
+assets/crests/*
+!assets/crests/README.md
