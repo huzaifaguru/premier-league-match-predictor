@@ -1,5 +1,6 @@
-"""Streamlit demo: pick a home/away team, see predicted outcome
-probabilities and the top factors behind them.
+"""Streamlit demo: pick a real upcoming Premier League fixture (or a
+hypothetical matchup), see a predicted result, the probabilities behind
+it, and the top factors driving it.
 
 Deliberately honest about what this is: a portfolio demonstration of a
 model that, on held-out historical data, does NOT beat the bookmaker's own
@@ -15,7 +16,7 @@ import pandas as pd
 import streamlit as st
 
 from src.config import CURRENT_SEASON, MODELS_DIR, ROOT_DIR, SEASON_CODES
-from src.data import load_raw_matches
+from src.data import load_raw_matches, load_upcoming_fixtures
 from src.evaluate import explain_single_match
 from src.features import FEATURE_COLUMNS, build_feature_table, describe_feature
 from src.train import CLASSES, CalibratedXGBoostModel
@@ -219,6 +220,14 @@ def load_results_table():
     return pd.read_csv(path, index_col="model") if path.exists() else None
 
 
+@st.cache_data(ttl=3600, show_spinner="Checking for upcoming Premier League fixtures...")
+def load_fixtures_cached():
+    # Cached for an hour, not forever: unlike historical results, this
+    # genuinely changes (odds move, new fixtures get posted) while the
+    # app process stays up.
+    return load_upcoming_fixtures()
+
+
 model, state, teams, raw_all, standings_df, standings_season = load_app_resources()
 
 st.title("Premier League Match Outcome Predictor")
@@ -243,21 +252,86 @@ if results_table is not None and "bookmaker_baseline" in results_table.index and
         "reasonable estimate to inspect, not a betting edge. See the README for the full analysis."
     )
 
+fixtures_df = load_fixtures_cached()
+upcoming = fixtures_df[fixtures_df["kickoff"] >= pd.Timestamp.now()] if not fixtures_df.empty else fixtures_df
+
+fixture_odds = None
 with st.container(border=True):
     st.markdown("##### Choose a matchup")
-    col1, col2, col3 = st.columns([2, 2, 1.3])
-    with col1:
-        home_team = st.selectbox("Home team", teams, index=teams.index("Arsenal") if "Arsenal" in teams else 0)
-    with col2:
-        away_options = [t for t in teams if t != home_team]
-        away_team = st.selectbox("Away team", away_options, index=0)
-    with col3:
-        match_date = st.date_input("Match date", value=pd.Timestamp.today())
+    if not upcoming.empty:
+        source = st.radio(
+            "Matchup source",
+            ["Upcoming fixture (real date/time)", "Custom (any two teams, hypothetical)"],
+            horizontal=True, label_visibility="collapsed",
+        )
+    else:
+        source = "Custom (any two teams, hypothetical)"
+        st.caption(
+            "No upcoming Premier League fixtures are currently listed by the data source "
+            "(football-data.co.uk publishes roughly one gameweek at a time), so only the "
+            "custom matchup mode is available right now."
+        )
+
+    if source.startswith("Upcoming"):
+        labels = [
+            f"{r.home_team} vs {r.away_team}  ·  {r.kickoff.strftime('%a %d %b, %H:%M')}"
+            for r in upcoming.itertuples(index=False)
+        ]
+        picked = st.selectbox("Upcoming Premier League fixture", labels)
+        fixture_row = upcoming.iloc[labels.index(picked)]
+        home_team = fixture_row["home_team"]
+        away_team = fixture_row["away_team"]
+        match_date = fixture_row["kickoff"]
+        if pd.notna(fixture_row["odds_home"]):
+            fixture_odds = (fixture_row["odds_home"], fixture_row["odds_draw"], fixture_row["odds_away"])
+        st.caption(
+            f"Real fixture from football-data.co.uk. Kickoff: "
+            f"{match_date.strftime('%A %d %B %Y, %H:%M')} UK time."
+        )
+    else:
+        col1, col2, col3 = st.columns([2, 2, 1.3])
+        with col1:
+            home_team = st.selectbox("Home team", teams, index=teams.index("Arsenal") if "Arsenal" in teams else 0)
+        with col2:
+            away_options = [t for t in teams if t != home_team]
+            away_team = st.selectbox("Away team", away_options, index=0)
+        with col3:
+            match_date = pd.Timestamp(st.date_input("Match date", value=pd.Timestamp.today()))
+        st.caption("Hypothetical matchup and date, not tied to a real scheduled fixture.")
 
 feat = state.snapshot(home_team, away_team, pd.Timestamp(match_date))
 X_row = pd.DataFrame([feat])[FEATURE_COLUMNS]
 proba = model.predict_proba(X_row)[0]
 pred_idx = int(proba.argmax())
+predicted_class = CLASSES[pred_idx]
+confidence = proba[pred_idx]
+explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
+
+if predicted_class == "D":
+    headline = "Draw"
+else:
+    headline = f"{home_team if predicted_class == 'H' else away_team} to win"
+
+top_factor_text = describe_feature(explanation.iloc[0]["feature"])
+top_factor_text = top_factor_text[0].lower() + top_factor_text[1:]
+
+with st.container(border=True):
+    st.markdown("##### Prediction")
+    st.markdown(f"# {headline}")
+    st.markdown(
+        f"Model confidence: **{confidence:.0%}**. The single biggest factor behind this "
+        f"prediction is {top_factor_text}"
+    )
+    prob_df = pd.DataFrame({
+        "Outcome": [CLASS_LABELS[c] for c in CLASSES],
+        "Probability": proba,
+    }).set_index("Outcome")
+    pcol, mcol = st.columns([2, 1])
+    with pcol:
+        st.bar_chart(prob_df, horizontal=True, color=ACCENT_COLOR)
+    with mcol:
+        for c, p in zip(CLASSES, proba):
+            st.metric(CLASS_LABELS[c], f"{p:.1%}")
 
 with st.container(border=True):
     st.markdown("##### Team comparison")
@@ -300,25 +374,11 @@ with st.container(border=True):
         st.table(display_h2h.set_index("Date"))
 
 with st.container(border=True):
-    st.markdown("##### Predicted probabilities")
-    prob_df = pd.DataFrame({
-        "Outcome": [CLASS_LABELS[c] for c in CLASSES],
-        "Probability": proba,
-    }).set_index("Outcome")
-    pcol, mcol = st.columns([2, 1])
-    with pcol:
-        st.bar_chart(prob_df, horizontal=True, color=ACCENT_COLOR)
-    with mcol:
-        for c, p in zip(CLASSES, proba):
-            st.metric(CLASS_LABELS[c], f"{p:.1%}")
-
-with st.container(border=True):
     st.markdown(f"##### Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
-    explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
     fig, ax = _dark_figure(figsize=(8, 4))
     colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
     ax.barh(explanation["feature"][::-1], explanation["shap_value"][::-1], color=colors)
-    ax.set_xlabel(f"SHAP value (push toward '{CLASS_LABELS[CLASSES[pred_idx]]}' →, away from it ←)")
+    ax.set_xlabel(f"SHAP value (positive bars push toward '{CLASS_LABELS[CLASSES[pred_idx]]}', negative bars push away from it)")
     fig.tight_layout()
     st.pyplot(fig)
 
@@ -338,12 +398,19 @@ with st.expander("Raw feature snapshot used for this prediction"):
         })
     st.table(pd.DataFrame(summary_rows).set_index("Team"))
 
-with st.expander("Compare against bookmaker odds (optional)"):
-    st.caption("Enter decimal odds (e.g. Bet365) for this matchup to see the market's own de-vigged view alongside the model's.")
-    oc1, oc2, oc3 = st.columns(3)
-    odds_home = oc1.number_input("Home odds", min_value=1.01, value=None, step=0.01, format="%.2f")
-    odds_draw = oc2.number_input("Draw odds", min_value=1.01, value=None, step=0.01, format="%.2f")
-    odds_away = oc3.number_input("Away odds", min_value=1.01, value=None, step=0.01, format="%.2f")
+with st.expander("Compare against bookmaker odds", expanded=fixture_odds is not None):
+    if fixture_odds is not None:
+        odds_home, odds_draw, odds_away = fixture_odds
+        st.caption(
+            f"Live Bet365 pre-match odds for this fixture: Home {odds_home:.2f} "
+            f"· Draw {odds_draw:.2f} · Away {odds_away:.2f}"
+        )
+    else:
+        st.caption("Enter decimal odds (e.g. Bet365) for this matchup to see the market's own de-vigged view alongside the model's.")
+        oc1, oc2, oc3 = st.columns(3)
+        odds_home = oc1.number_input("Home odds", min_value=1.01, value=None, step=0.01, format="%.2f")
+        odds_draw = oc2.number_input("Draw odds", min_value=1.01, value=None, step=0.01, format="%.2f")
+        odds_away = oc3.number_input("Away odds", min_value=1.01, value=None, step=0.01, format="%.2f")
     if odds_home and odds_draw and odds_away:
         inv = [1 / odds_home, 1 / odds_draw, 1 / odds_away]
         overround = sum(inv)

@@ -6,6 +6,7 @@ formats change from dd/mm/yy to dd/mm/yyyy around 2019/20), so this module's
 job is narrow: fetch, cache, and normalize to one stable schema. No feature
 engineering happens here, that's features.py.
 """
+import io
 import logging
 
 import pandas as pd
@@ -107,6 +108,53 @@ def load_raw_matches(seasons: list[str] | None = None, force_download: bool = Fa
 
     df = df.sort_values("date").reset_index(drop=True)
     return df
+
+
+FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
+
+FIXTURE_COLUMN_MAP = {
+    "Date": "date", "Time": "time", "HomeTeam": "home_team", "AwayTeam": "away_team",
+    "B365H": "odds_home", "B365D": "odds_draw", "B365A": "odds_away",
+}
+
+
+def load_upcoming_fixtures() -> pd.DataFrame:
+    """Live upcoming-fixtures list (Premier League only), with real kickoff
+    datetimes and Bet365 pre-match odds where already posted by bookmakers.
+
+    Deliberately not disk-cached like load_season(): this data is genuinely
+    live and changes day to day as fixtures are played and new ones get
+    posted, unlike the historical per-season results, which are permanent.
+    Returns an empty (but correctly-shaped) DataFrame if the request fails
+    or no Premier League fixtures are currently listed, rather than raising,
+    since callers treat "no upcoming fixtures right now" as a normal state.
+    """
+    columns = ["kickoff", "home_team", "away_team", "odds_home", "odds_draw", "odds_away"]
+    try:
+        response = requests.get(FIXTURES_URL, timeout=30, allow_redirects=True)
+        response.raise_for_status()
+        # Read from raw bytes with an explicit encoding, not response.text:
+        # requests' auto-detected `.encoding` for this response comes back
+        # ISO-8859-1 even though the file is actually UTF-8-with-BOM, which
+        # mis-decodes the leading BOM bytes (EF BB BF) into three separate
+        # mojibake characters instead of one clean U+FEFF. That silently
+        # attaches itself to the first column's name ("Div" becomes
+        # unrecognizable), breaking any lookup of "Div" by that name.
+        # encoding="utf-8-sig" decodes correctly AND strips the BOM.
+        raw = pd.read_csv(io.BytesIO(response.content), encoding="utf-8-sig")
+    except Exception:
+        logger.warning("Could not fetch upcoming fixtures", exc_info=True)
+        return pd.DataFrame(columns=columns)
+
+    raw = raw[raw.get("Div") == "E0"]
+    if raw.empty:
+        return pd.DataFrame(columns=columns)
+
+    available = {src: dst for src, dst in FIXTURE_COLUMN_MAP.items() if src in raw.columns}
+    df = raw[list(available)].rename(columns=available)
+    df["kickoff"] = pd.to_datetime(df["date"] + " " + df["time"], dayfirst=True, format="mixed")
+    df = df.drop(columns=["date", "time"])
+    return df.sort_values("kickoff").reset_index(drop=True)[columns]
 
 
 if __name__ == "__main__":
