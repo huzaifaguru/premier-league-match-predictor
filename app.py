@@ -44,12 +44,11 @@ BADGE_PALETTE = [
 ]
 RESULT_COLORS = {"W": "#4caf7d", "D": "#8a8f8d", "L": "#ff6b6b"}
 
-# Optional real crest images: this app deliberately does not fetch or ship
-# any club artwork itself (see README for why). If you want real crests
-# instead of the generated shield badges, drop image files here yourself,
-# named <slug>.png/.svg/.jpg/.webp using _team_slug(team) below (e.g.
-# "Nott'm Forest" -> "nottm_forest.png"). Any team without a matching file
-# just keeps using the generated badge, nothing else changes.
+# Real crest images for all 20 current teams live in assets/crests/
+# (see assets/crests/README.md), named <slug>.png using _team_slug(team)
+# below (e.g. "Nott'm Forest" -> "nott_m_forest.png"). Any team without a
+# matching file (a future promoted/relegated side) falls back to the
+# generated shield badge below, nothing else changes.
 CRESTS_DIR = ROOT_DIR / "assets" / "crests"
 _CREST_MIME = {"png": "image/png", "svg": "image/svg+xml", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
 
@@ -401,7 +400,7 @@ def load_full_season_fixtures_cached():
 
 model, state, teams, raw_all, standings_df, standings_season, features_all = load_app_resources()
 
-st.title("Premier League Match Outcome Predictor")
+st.title("Premier League Match Outcome Predictor", anchor=False)
 st.markdown(
     f"<div style='height:4px; width:72px; background:{ACCENT_COLOR}; "
     "border-radius:2px; margin:4px 0 16px 0;'></div>",
@@ -441,7 +440,7 @@ selectable_fixtures = pd.concat([recent_played, next_unplayed]).sort_values("kic
 
 fixture_odds = None
 with st.container(border=True):
-    st.markdown("##### Choose a matchup")
+    st.header("Choose a matchup", anchor=False)
     if not selectable_fixtures.empty:
         source = st.radio(
             "Matchup source",
@@ -509,8 +508,18 @@ if pd.Timestamp(match_date) <= pd.Timestamp.now():
     actual = lookup_actual_result(raw_all, full_season_df, home_team, away_team, pd.Timestamp(match_date))
 
 with st.container(border=True):
-    st.markdown("##### Prediction")
-    st.markdown(f"# {headline}")
+    st.header("Prediction", anchor=False)
+    # A styled callout, not a heading: this is the tool's single most
+    # important output and needs to read as the visual focal point of the
+    # page, but it names one specific match's result, it isn't a section
+    # of the document outline, so it shouldn't be marked up as one
+    # (a raw "# ..." markdown here would render a second, spurious <h1>).
+    st.markdown(
+        f"<div style='font-size:2.75rem; font-weight:700; line-height:1.2; "
+        f"color:{TEXT_COLOR}; border-left:6px solid {ACCENT_COLOR}; "
+        f"padding:4px 0 4px 20px; margin:8px 0 16px 0;'>{html.escape(headline)}</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(f"Model confidence: **{confidence:.0%}**.")
     st.markdown(f"Single biggest factor: {top_factor_text}")
     if actual is not None:
@@ -536,7 +545,7 @@ with st.container(border=True):
             st.metric(CLASS_LABELS[c], f"{p:.1%}")
 
 with st.container(border=True):
-    st.markdown("##### Team comparison")
+    st.header("Team comparison", anchor=False)
     bcol1, bcol2 = st.columns(2)
     for col, team, side in [(bcol1, home_team, "home"), (bcol2, away_team, "away")]:
         with col:
@@ -562,7 +571,7 @@ with st.container(border=True):
             st.markdown(form_badges_html(recent_form(raw_all, team, pd.Timestamp(match_date))), unsafe_allow_html=True)
 
 with st.container(border=True):
-    st.markdown(f"##### Head-to-head: {home_team} vs {away_team}")
+    st.header(f"Head-to-head: {home_team} vs {away_team}", anchor=False)
     h2h = head_to_head(raw_all, home_team, away_team, pd.Timestamp(match_date))
     if h2h.empty:
         st.caption("No previous meetings on record in this dataset (2010/11 onward).")
@@ -576,7 +585,7 @@ with st.container(border=True):
         st.table(display_h2h.set_index("Date"))
 
 with st.container(border=True):
-    st.markdown(f"##### Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction")
+    st.header(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction", anchor=False)
     st.caption(f"Every bar below is labeled with the specific team it refers to: {home_team} (home) or {away_team} (away).")
     labels = [chart_label(f, home_team, away_team) for f in explanation["feature"]]
     fig, ax = _dark_figure(figsize=(8, 4))
@@ -603,6 +612,10 @@ with st.expander("Raw feature snapshot used for this prediction"):
     st.table(pd.DataFrame(summary_rows).set_index("Team"))
 
 with st.expander("Compare against bookmaker odds", expanded=fixture_odds is not None):
+    st.caption(
+        "This only builds the market-comparison chart below. It doesn't change the model's own "
+        "prediction or probabilities shown above, those are fixed once you pick a matchup."
+    )
     if fixture_odds is not None:
         odds_home, odds_draw, odds_away = fixture_odds
         st.caption(
@@ -630,7 +643,7 @@ if results_table is not None:
         st.dataframe(results_table)
 
 with st.container(border=True):
-    st.markdown("##### Season schedule: predictions vs. actual results")
+    st.header("Season schedule: predictions vs. actual results", anchor=False)
     st.caption(
         f"Every {CURRENT_SEASON[:2]}/{CURRENT_SEASON[2:]} Premier League match, played and upcoming. "
         "Already-played matches show what the model predicted beforehand (leakage-safe, computed the "
