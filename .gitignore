@@ -20,3 +20,7 @@ models/*.joblib
 .pytest_cache/
 .coverage
 
+
+# ...except the small serving model the Streamlit app loads on startup
+# (regenerate with `python -m src.app_model`).
+!models/app_model.joblib
