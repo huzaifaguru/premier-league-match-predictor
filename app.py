@@ -238,7 +238,7 @@ def bookmaker_verdict() -> dict | None:
 
 verdict = bookmaker_verdict()
 
-tab_predict, tab_perf, tab_how = st.tabs(["⚽ Predict", "\U0001F4CA Model performance", "\U0001F4D6 How it works"])
+tab_predict, tab_perf, tab_how = st.tabs(["⚽ Predict", "\U0001F4CA Performance", "\U0001F4D6 How it works"])
 
 # ---------------------------------------------------------------------------
 # Predict tab
@@ -349,20 +349,23 @@ with tab_predict:
         if verdict:
             st.caption(
                 f"For context: on {len(TEST_SEASONS)} held-out seasons this model scored {verdict['verdict']} "
-                "the bookmaker's own odds. See the Model performance tab."
+                "the bookmaker's own odds. See the Performance tab."
             )
 
         # --- Supporting stats (all already computed for this prediction) ---
         def rest_text(v):
             return "n/a" if pd.isna(v) else f"{int(v)} days"
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(f"{home_team} Elo", f"{feat['elo_home_pre']:.0f}", border=True)
-        m2.metric(f"{away_team} Elo", f"{feat['elo_away_pre']:.0f}", border=True)
-        m3.metric("Elo gap (home minus away)", f"{feat['elo_home_pre'] - feat['elo_away_pre']:+.0f}", border=True,
-                  help="Before any home advantage is added.")
-        m4.metric("Rest days", f"{rest_text(feat['rest_days_home'])} / {rest_text(feat['rest_days_away'])}",
-                  border=True, help=f"Days since each team's previous match ({home_team} / {away_team}).")
+        def rest_short(v):
+            return "n/a" if pd.isna(v) else f"{int(v)}"
+
+        st.markdown(ui.stat_cards_html([
+            (f"{home_team} Elo", f"{feat['elo_home_pre']:.0f}", "team strength rating"),
+            (f"{away_team} Elo", f"{feat['elo_away_pre']:.0f}", "team strength rating"),
+            ("Elo gap", f"{feat['elo_home_pre'] - feat['elo_away_pre']:+.0f}", "home minus away, before home advantage"),
+            ("Rest days", f"{rest_short(feat['rest_days_home'])} / {rest_short(feat['rest_days_away'])}",
+             f"{home_team} / {away_team}"),
+        ]), unsafe_allow_html=True)
 
         f1, f2 = st.columns(2)
         for col, team in ((f1, home_team), (f2, away_team)):
@@ -535,21 +538,26 @@ with tab_perf:
             st.dataframe(results_display(ablation, [m for m in ablation.index if m != "bookmaker_baseline"]),
                          hide_index=True, width="stretch")
 
-        plots = [
-            ("calibration_plot.png", "Calibration: predicted probability vs how often it happened",
-             "Points near the dashed diagonal mean the probabilities can be taken at face value."),
-            ("shap_importance.png", "Feature importance (XGBoost, SHAP)",
-             "The Elo rating gap dominates. SHAP splits credit between correlated Elo features, "
-             "so the ablation above is the cleaner evidence."),
-            ("kelly_backtest.png", "Paper-money betting backtest",
-             "Staking whenever the model disagrees with the odds loses steadily: the apparent edges are noise."),
-        ]
-        for fname, title, caption in plots:
+        def report_plot(fname, title, caption):
             path = REPORTS_DIR / fname
             if path.exists():
                 st.subheader(title, anchor=False)
                 st.image(str(path), width="stretch")
                 st.caption(caption)
+
+        # The wide three-panel calibration plot gets the full width; the two
+        # taller charts sit side by side on desktop and stack on a phone.
+        report_plot("calibration_plot.png", "Calibration: predicted probability vs how often it happened",
+                    "Points near the dashed diagonal mean the probabilities can be taken at face value.")
+        p1, p2 = st.columns(2)
+        with p1:
+            report_plot("shap_importance.png", "Feature importance (XGBoost, SHAP)",
+                        "The Elo rating gap dominates. SHAP splits credit between correlated Elo features, "
+                        "so the ablation above is the cleaner evidence.")
+        with p2:
+            report_plot("kelly_backtest.png", "Paper-money betting backtest",
+                        "Staking whenever the model disagrees with the odds loses steadily: the apparent edges "
+                        "are noise.")
 
         st.markdown(f"Full numbers, including every pairwise comparison: "
                     f"[evaluation report]({REPO_URL}/blob/main/reports/evaluation_report.md).")
@@ -597,8 +605,8 @@ cross-validation on the earlier seasons. Walk-forward means always training on t
 next season, never a random shuffle.
 
 **Honest testing.** The last {len(TEST_SEASONS)} seasons ({season_label(TEST_SEASONS[0])} to
-{season_label(TEST_SEASONS[-1])}) were held back from all tuning and only scored once at the end, against the
-bookmaker's own odds with the margin removed.
+{season_label(TEST_SEASONS[-1])}) were never used for tuning or choosing the model. They're only used to score
+the finished models, against the bookmaker's own odds with the margin removed.
 """)
     st.subheader("Limitations", anchor=False)
     st.markdown("""
@@ -607,7 +615,7 @@ bookmaker's own odds with the margin removed.
 - **Draws are almost never the top pick.** They rarely have the single highest probability, so read the full
   home / draw / away bar, not just the headline.
 - **Newly promoted teams start from an average rating**, so early-season predictions for them are rough.
-- **Hypothetical matchups** use each team's current form and rating, whatever date you pick.
+- **Hypothetical matchups** use each team's current form and rating; the date you pick only changes rest days.
 - **Not betting advice.** A backtest of betting on the model's "edges" lost money steadily.
 """)
 

@@ -83,6 +83,12 @@ def inject_css() -> None:
         .plm-empty .plm-empty-icon {{ font-size: 2.2rem; }}
         .plm-empty strong {{ color: {TEXT}; font-size: 1.1rem; display: block; margin: 0.4rem 0 0.2rem 0; }}
 
+        .plm-stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin: 1rem 0; }}
+        .plm-stat {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 14px; padding: 0.8rem 1rem; min-width: 0; }}
+        .plm-stat .plm-stat-label {{ color: {MUTED}; font-size: 0.8rem; overflow-wrap: anywhere; }}
+        .plm-stat .plm-stat-value {{ font-size: clamp(1.3rem, 3vw, 1.9rem); font-weight: 700; line-height: 1.2; margin-top: 0.15rem; }}
+        .plm-stat .plm-stat-sub {{ color: {MUTED}; font-size: 0.75rem; margin-top: 0.1rem; }}
+
         .plm-form {{ display: flex; flex-wrap: wrap; gap: 6px; }}
         .plm-form span {{ display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
                           border-radius: 8px; color: {INK}; font-weight: 700; font-size: 0.8rem; }}
@@ -90,7 +96,12 @@ def inject_css() -> None:
         .plm-footer {{ border-top: 1px solid {BORDER}; margin-top: 2.5rem; padding-top: 1rem; color: {MUTED};
                        font-size: 0.85rem; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; }}
 
+        /* The one rule aimed at Streamlit itself (a stable data-testid):
+           trim the default top padding, keeping clear of the fixed ~60px header. */
+        [data-testid="stMainBlockContainer"] {{ padding-top: 4.5rem; }}
+
         @media (max-width: 640px) {{
+            .plm-stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }}
             .plm-teams {{ gap: 0.4rem; }}
             .plm-bar {{ height: 40px; }}
             .plm-seg {{ font-size: 0.8rem; }}
@@ -217,6 +228,17 @@ def match_card_html(home: str, away: str, when: str, proba, classes, extra_lines
       {extras}
     </div>
     """
+
+
+def stat_cards_html(stats: list[tuple[str, str, str]]) -> str:
+    """A row of small stat cards: (label, value, sub-caption) each. Four
+    across on desktop, two by two on a phone."""
+    cards = "".join(
+        f"<div class='plm-stat'><div class='plm-stat-label'>{html.escape(label)}</div>"
+        f"<div class='plm-stat-value'>{html.escape(value)}</div>"
+        + (f"<div class='plm-stat-sub'>{html.escape(sub)}</div>" if sub else "") + "</div>"
+        for label, value, sub in stats)
+    return f"<div class='plm-stats'>{cards}</div>"
 
 
 def form_pills_html(form_rows: list[dict]) -> str:
