@@ -55,14 +55,14 @@ def _rolling_averages(history: deque, window: int) -> dict:
     return out
 
 
-def _implied_probabilities(row: pd.Series) -> tuple[float, float, float]:
+def _implied_probabilities(odds_home: float, odds_draw: float, odds_away: float) -> tuple[float, float, float]:
     """De-vig bookmaker odds via the multiplicative method: divide each
     raw implied probability (1/odds) by the overround so the three
     outcomes sum to 1. This is what 'implied probability with the margin
     removed' means: raw 1/odds always sums to >1 because it embeds the
     bookmaker's profit margin.
     """
-    inv_home, inv_draw, inv_away = 1 / row["odds_home"], 1 / row["odds_draw"], 1 / row["odds_away"]
+    inv_home, inv_draw, inv_away = 1 / odds_home, 1 / odds_draw, 1 / odds_away
     overround = inv_home + inv_draw + inv_away
     return inv_home / overround, inv_draw / overround, inv_away / overround
 
@@ -85,7 +85,13 @@ class LeagueState:
     actually trained.
     """
 
-    def __init__(self):
+    def __init__(self, k_factor: float = ELO_K_FACTOR, home_advantage: float = ELO_HOME_ADVANTAGE,
+                 carryover: float = ELO_SEASON_CARRYOVER):
+        # Elo parameters default to the config values but are tunable (see
+        # train.tune_elo_params, which searches them on tuning seasons only).
+        self.k_factor = k_factor
+        self.home_advantage = home_advantage
+        self.carryover = carryover
         self.overall_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=_MAX_OVERALL_WINDOW))
         self.home_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
         self.away_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
@@ -100,7 +106,7 @@ class LeagueState:
             # (they'll init at ELO_INITIAL_RATING on first appearance,
             # including newly promoted teams).
             for team in list(self.elo.keys()):
-                self.elo[team] = ELO_INITIAL_RATING + ELO_SEASON_CARRYOVER * (self.elo[team] - ELO_INITIAL_RATING)
+                self.elo[team] = ELO_INITIAL_RATING + self.carryover * (self.elo[team] - ELO_INITIAL_RATING)
         self.current_season = season
 
     def snapshot(self, home: str, away: str, date: pd.Timestamp) -> dict:
@@ -129,7 +135,7 @@ class LeagueState:
         elo_home_pre, elo_away_pre = self.elo[home], self.elo[away]
         feat["elo_home_pre"] = elo_home_pre
         feat["elo_away_pre"] = elo_away_pre
-        feat["elo_diff"] = elo_home_pre + ELO_HOME_ADVANTAGE - elo_away_pre
+        feat["elo_diff"] = elo_home_pre + self.home_advantage - elo_away_pre
 
         return feat
 
@@ -137,10 +143,10 @@ class LeagueState:
         home, away, date = row["home_team"], row["away_team"], row["date"]
 
         elo_home_pre, elo_away_pre = self.elo[home], self.elo[away]
-        expected_home = 1 / (1 + 10 ** (-(elo_home_pre + ELO_HOME_ADVANTAGE - elo_away_pre) / 400))
+        expected_home = 1 / (1 + 10 ** (-(elo_home_pre + self.home_advantage - elo_away_pre) / 400))
         actual_home = 1.0 if row["result"] == "H" else (0.5 if row["result"] == "D" else 0.0)
-        self.elo[home] = elo_home_pre + ELO_K_FACTOR * (actual_home - expected_home)
-        self.elo[away] = elo_away_pre + ELO_K_FACTOR * ((1 - actual_home) - (1 - expected_home))
+        self.elo[home] = elo_home_pre + self.k_factor * (actual_home - expected_home)
+        self.elo[away] = elo_away_pre + self.k_factor * ((1 - actual_home) - (1 - expected_home))
 
         self.overall_history[home].append(_match_stats(row, is_home=True))
         self.overall_history[away].append(_match_stats(row, is_home=False))
@@ -154,12 +160,15 @@ class LeagueState:
         return sorted(self.elo.keys())
 
 
-def build_feature_table(raw: pd.DataFrame, return_state: bool = False):
+def build_feature_table(raw: pd.DataFrame, return_state: bool = False, elo_params: dict | None = None):
     """Walk matches in chronological order, emitting one feature row per
     match built only from that team's history up to (not including) it.
+
+    `elo_params` optionally overrides LeagueState's Elo parameters
+    (k_factor, home_advantage, carryover).
     """
     matches = raw.sort_values(["date", "season"]).reset_index(drop=True)
-    state = LeagueState()
+    state = LeagueState(**(elo_params or {}))
 
     records = []
     for row in matches.itertuples(index=False):
@@ -178,15 +187,21 @@ def build_feature_table(raw: pd.DataFrame, return_state: bool = False):
             # predicting and would be pure leakage as a model input.
             "home_goals": row["home_goals"], "away_goals": row["away_goals"],
             "odds_home": row.get("odds_home"), "odds_draw": row.get("odds_draw"), "odds_away": row.get("odds_away"),
+            "odds_close_home": row.get("odds_close_home", np.nan),
+            "odds_close_draw": row.get("odds_close_draw", np.nan),
+            "odds_close_away": row.get("odds_close_away", np.nan),
         })
 
         # --- de-vigged bookmaker implied probabilities (not a model feature,
         # kept alongside the row so evaluate.py can build the odds baseline
         # without re-joining raw data) ---
-        if pd.notna(feat["odds_home"]) and pd.notna(feat["odds_draw"]) and pd.notna(feat["odds_away"]):
-            feat["implied_prob_home"], feat["implied_prob_draw"], feat["implied_prob_away"] = _implied_probabilities(row)
-        else:
-            feat["implied_prob_home"] = feat["implied_prob_draw"] = feat["implied_prob_away"] = np.nan
+        for prefix, tag in (("odds", "implied_prob"), ("odds_close", "implied_close_prob")):
+            odds = [feat[f"{prefix}_{o}"] for o in ("home", "draw", "away")]
+            if all(pd.notna(o) for o in odds):
+                probs = _implied_probabilities(*odds)
+            else:
+                probs = (np.nan, np.nan, np.nan)
+            feat[f"{tag}_home"], feat[f"{tag}_draw"], feat[f"{tag}_away"] = probs
 
         records.append(feat)
         state.advance(row)

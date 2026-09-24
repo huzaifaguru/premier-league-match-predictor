@@ -4,11 +4,12 @@ These tests exist to make one claim checkable, not just assertable in
 prose: a match's engineered features never depend on that match's own
 result, or on any match that happens after it.
 """
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.config import ELO_INITIAL_RATING
-from src.features import build_feature_table
+from src.features import FEATURE_COLUMNS, build_feature_table
 
 
 def _match(date, home, away, hg, ag, hs=10, as_=10, hst=5, ast=5, hc=5, ac=5,
@@ -112,3 +113,60 @@ def test_implied_probabilities_remove_the_overround():
     # Raw 1/odds sums to 1/2 + 1/3 + 1/4 = 1.0833... > 1 (the bookmaker's
     # margin); de-vigged probabilities must be strictly smaller per outcome.
     assert feat["implied_prob_home"] < 1 / 2.0
+
+
+def _synthetic_season(n_teams=6, rounds=4, seed=0, season="2324", start="2023-08-01"):
+    """A small round-robin fixture list with random scores, one match per
+    day so the ordering is unambiguous."""
+    rng = np.random.default_rng(seed)
+    teams = [f"T{i}" for i in range(n_teams)]
+    rows, day = [], pd.Timestamp(start)
+    for _ in range(rounds):
+        for i, home in enumerate(teams):
+            for away in teams[i + 1:]:
+                h, a = (home, away) if rng.random() < 0.5 else (away, home)
+                rows.append(_match(day, h, a, int(rng.poisson(1.5)), int(rng.poisson(1.1)),
+                                   hs=int(rng.integers(5, 20)), as_=int(rng.integers(5, 20)), season=season))
+                day += pd.Timedelta(days=1)
+    return pd.DataFrame(rows)
+
+
+def test_perturbing_a_future_result_leaves_all_earlier_features_unchanged():
+    raw = _synthetic_season()
+    k = len(raw) // 2
+    original = build_feature_table(raw)[FEATURE_COLUMNS]
+
+    perturbed_raw = raw.copy()
+    # Replace match k's scoreline and stats with something very different.
+    perturbed_raw.loc[k, ["home_goals", "away_goals", "result"]] = [0, 7, "A"]
+    perturbed_raw.loc[k, ["home_shots", "away_shots", "home_corners", "away_corners"]] = [0, 40, 0, 20]
+    perturbed = build_feature_table(perturbed_raw)[FEATURE_COLUMNS]
+
+    # Features for every match up to and including k must be identical...
+    pd.testing.assert_frame_equal(original.iloc[:k + 1], perturbed.iloc[:k + 1])
+    # ...and the change must actually reach later matches, otherwise this
+    # test would pass without testing anything.
+    assert not original.iloc[k + 1:].equals(perturbed.iloc[k + 1:])
+
+
+def test_appending_later_matches_does_not_change_earlier_features():
+    first = _synthetic_season(seed=1)
+    later = _synthetic_season(seed=2, season="2425", start="2024-08-01")
+    alone = build_feature_table(first)[FEATURE_COLUMNS]
+    extended = build_feature_table(pd.concat([first, later], ignore_index=True))[FEATURE_COLUMNS]
+
+    assert len(extended) == len(first) + len(later)
+    pd.testing.assert_frame_equal(alone, extended.iloc[:len(first)])
+
+
+def test_custom_elo_params_are_used():
+    raw = pd.DataFrame([
+        _match("2023-08-01", "A", "B", 1, 0),
+        _match("2023-08-08", "A", "B", 1, 0),
+    ])
+    small_k = build_feature_table(raw, elo_params={"k_factor": 10, "home_advantage": 0, "carryover": 1.0})
+    big_k = build_feature_table(raw, elo_params={"k_factor": 40, "home_advantage": 0, "carryover": 1.0})
+    # With no home advantage an even match has expected score 0.5, so A
+    # gains exactly K * 0.5 from winning match 1.
+    assert small_k.iloc[1]["elo_home_pre"] == pytest.approx(ELO_INITIAL_RATING + 5)
+    assert big_k.iloc[1]["elo_home_pre"] == pytest.approx(ELO_INITIAL_RATING + 20)
