@@ -61,59 +61,11 @@ RESULT_COLORS = {"W": "#4caf7d", "D": "#8a8f8d", "L": "#ff6b6b"}
 CRESTS_DIR = ROOT_DIR / "assets" / "crests"
 _CREST_MIME = {"png": "image/png", "svg": "image/svg+xml", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
 
-st.set_page_config(page_title="Premier League Match Predictor", layout="wide")
-
-# Streamlit's native `[theme] font = "name:url"` config doesn't actually
-# inject the stylesheet for an external URL in this Streamlit version
-# (verified: no <link>/@import ever appears in the rendered page, font
-# silently falls back), so it's loaded the traditional, reliable way instead.
-st.markdown(
-    f"""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Saira:wght@400;500;600;700&display=swap');
-    :root {{
-        /* Semantic tokens (design-spec-driven, not raw hex in component code). */
-        --space-1: 3px; --space-2: 5px; --space-3: 7px; --space-4: 8px;
-        --space-5: 10px; --space-6: 15px; --space-7: 20px; --space-8: 25px;
-        --radius-xs: 6px; --radius-sm: 8px;
-        --motion-instant: 150ms; --motion-fast: 200ms;
-        --color-text-primary: {TEXT_COLOR}; --color-text-secondary: {TEXT_SECONDARY};
-        --color-text-tertiary: {MUTED_COLOR}; --color-text-inverse: {SECONDARY_COLOR};
-        --color-surface-base: {BG_COLOR}; --color-surface-raised: {SURFACE_RAISED};
-        --color-surface-strong: {ACCENT_COLOR};
-    }}
-    /* Exclude icon elements. Streamlit renders icons (expander arrows,
-       etc.) as ligature text like "keyboard_arrow_right" in the Material
-       Symbols font, so overriding font-family on them turns icons into
-       visible broken text instead of glyphs. */
-    *:not([data-testid="stIconMaterial"]) {{
-        font-family: 'Saira', Arial, sans-serif !important;
-    }}
-    button, input, select, [data-baseweb="select"], [data-testid="stExpander"] summary {{
-        transition: all var(--motion-fast) ease !important;
-    }}
-    /* Focus-visible must stay clearly visible (keyboard-first requirement):
-       an explicit ring rather than relying on each widget's own default. */
-    button:focus-visible, input:focus-visible, select:focus-visible,
-    [data-baseweb="select"]:focus-within, [tabindex]:focus-visible,
-    a:focus-visible, [data-testid="stExpander"] summary:focus-visible {{
-        outline: 2px solid var(--color-surface-strong) !important;
-        outline-offset: 2px !important;
-    }}
-    /* Body text (captions, explanatory paragraphs) reads better at a
-       constrained line length than the full 1300px wide-layout container;
-       headings, tables and charts are left full-width. */
-    [data-testid="stMarkdownContainer"] p, [data-testid="stCaptionContainer"] p {{
-        max-width: 800px;
-    }}
-    /* Odds inputs only hold a 1-2 digit decimal; the default column width
-       leaves a wide gap between the value and the +/- steppers. */
-    [data-testid="stNumberInput"] {{
-        max-width: 160px;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
+st.set_page_config(
+    page_title="Premier League match predictor",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 
