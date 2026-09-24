@@ -9,6 +9,7 @@ engineering happens here, that's features.py.
 import io
 import logging
 import re
+import time
 
 import pandas as pd
 import requests
@@ -41,6 +42,18 @@ COLUMN_MAP = {
     "B365A": "odds_away",
 }
 
+# Bet365 *closing* odds (last price before kickoff). football-data.co.uk
+# only publishes these from 2019/20 onward, so they're optional: loaded
+# where present (all three test seasons have them) and left NaN before.
+# Note the plain B365H/D/A above are NOT closing odds: per
+# football-data.co.uk's notes.txt they're pre-closing prices, collected
+# Friday afternoon for weekend matches and Tuesday afternoon for midweek.
+OPTIONAL_COLUMN_MAP = {
+    "B365CH": "odds_close_home",
+    "B365CD": "odds_close_draw",
+    "B365CA": "odds_close_away",
+}
+
 REQUIRED_COLUMNS = [
     "date", "home_team", "away_team", "home_goals", "away_goals", "result",
 ]
@@ -58,12 +71,33 @@ def download_season(season: str, force: bool = False) -> "pathlib.Path":
 
     url = FOOTBALL_DATA_BASE_URL.format(season=season)
     logger.info("Downloading %s -> %s", url, path)
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+    response = _get_with_retries(url)
 
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     path.write_bytes(response.content)
     return path
+
+
+def _get_with_retries(url: str, attempts: int = 4, backoff_seconds: float = 2.0) -> requests.Response:
+    """GET with exponential backoff on rate limiting (HTTP 429), server
+    errors and connection failures. football-data.co.uk does rate-limit
+    bursts of requests, which is exactly what a cold start (17 season
+    files in a row) looks like."""
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, timeout=30)
+            if response.status_code != 429 and response.status_code < 500:
+                response.raise_for_status()
+                return response
+            logger.warning("HTTP %d from %s (attempt %d/%d)", response.status_code, url, attempt + 1, attempts)
+        except requests.ConnectionError:
+            logger.warning("Connection error for %s (attempt %d/%d)", url, attempt + 1, attempts)
+            if attempt == attempts - 1:
+                raise
+        if attempt < attempts - 1:
+            time.sleep(backoff_seconds * 2 ** attempt)
+    response.raise_for_status()
+    return response
 
 
 def _parse_dates(raw_dates: pd.Series) -> pd.Series:
@@ -84,6 +118,8 @@ def load_season(season: str, force_download: bool = False) -> pd.DataFrame:
         logger.warning("Season %s missing columns: %s", season, sorted(missing))
 
     df = raw[list(available)].rename(columns=available)
+    for src_col, dst_col in OPTIONAL_COLUMN_MAP.items():
+        df[dst_col] = raw[src_col] if src_col in raw.columns else float("nan")
     df["date"] = _parse_dates(df["date"])
     df["season"] = season
 
