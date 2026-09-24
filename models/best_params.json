@@ -1,10 +1,54 @@
 {
+  "elo": {
+    "k_factor": 20,
+    "home_advantage": 180,
+    "carryover": 0.75
+  },
   "xgboost": {
-    "max_depth": 2,
+    "max_depth": 1,
     "learning_rate": 0.03,
-    "n_estimators": 100
+    "n_estimators": 300
   },
   "logistic_regression": {
-    "C": 0.01
-  }
+    "C": 0.001
+  },
+  "dixon_coles": {
+    "xi": 0.0015
+  },
+  "blend": {
+    "weight": 0.6
+  },
+  "ablation": {
+    "elo_only": {
+      "logistic_regression": {
+        "C": 0.01
+      },
+      "xgboost": {
+        "max_depth": 1,
+        "learning_rate": 0.03,
+        "n_estimators": 200
+      }
+    },
+    "elo_form": {
+      "logistic_regression": {
+        "C": 0.003
+      },
+      "xgboost": {
+        "max_depth": 1,
+        "learning_rate": 0.03,
+        "n_estimators": 200
+      }
+    },
+    "all": {
+      "logistic_regression": {
+        "C": 0.001
+      },
+      "xgboost": {
+        "max_depth": 1,
+        "learning_rate": 0.03,
+        "n_estimators": 300
+      }
+    }
+  },
+  "primary_model": "blend_lr_dixon_coles"
 }

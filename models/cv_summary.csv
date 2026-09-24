@@ -1,0 +1,13 @@
+model,cv_mean_log_loss,n_folds
+bookmaker_baseline,0.9593986604914393,9
+blend_lr_dixon_coles,0.9748811156676397,9
+xgboost,0.9788793259196811,9
+xgboost_temperature,0.9804742866092258,9
+logistic_regression,0.9815748936172137,9
+xgboost_multinomial,0.9824441803826226,9
+logistic_temperature,0.982451346944524,9
+logistic_multinomial,0.9841239001051338,9
+dixon_coles,0.9863352917230931,9
+dixon_coles_no_decay,0.9931368621412555,9
+xgboost_isotonic,1.0148247480392456,9
+logistic_isotonic,1.085361562192437,9
