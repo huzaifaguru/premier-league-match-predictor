@@ -1,12 +1,35 @@
+# Dark "floodlit pitch" theme. Colours mirror the tokens in src/ui.py,
+# which uses them for the HTML components (match card, probability bar)
+# that the native theme can't reach.
+
 [theme]
 base = "dark"
-primaryColor = "#b43cb4"
-backgroundColor = "#000000"
-secondaryBackgroundColor = "#353f51"
-textColor = "#ffffff"
-font = "sans serif"
-baseFontSize = 16
-baseFontWeight = 400
-baseRadius = "8px"
-borderColor = "#ffffff"
+primaryColor = "#2ee07a"             # bright pitch green: buttons, focus, toggles
+backgroundColor = "#08110c"          # near-black with a green cast
+secondaryBackgroundColor = "#122019" # inputs, cards, code blocks
+textColor = "#eef3ef"                # off-white, ~17:1 on the background
+linkColor = "#5eeb9a"
+borderColor = "#22362b"
+dataframeBorderColor = "#22362b"
+dataframeHeaderBackgroundColor = "#122019"
 showWidgetBorder = true
+baseRadius = "12px"
+buttonRadius = "10px"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Barlow Semi Condensed:https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&display=swap"
+headingFontWeights = [700, 700, 600, 600, 600, 600]
+baseFontSize = 16
+# Home / draw / away, used by native charts (e.g. the model vs market bars).
+chartCategoricalColors = ["#2ee07a", "#f2b53a", "#4c8dff"]
+greenColor = "#2ee07a"
+blueColor = "#4c8dff"
+orangeColor = "#f2b53a"
+
+[theme.sidebar]
+backgroundColor = "#0d1812"
+secondaryBackgroundColor = "#152a1f"
+borderColor = "#22362b"
+
+[client]
+# Hides the Deploy button and developer menu entries for visitors.
+toolbarMode = "viewer"
