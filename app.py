@@ -10,7 +10,7 @@ worth inspecting, not a betting signal.
 import base64
 import hashlib
 import html
-import json
+import logging
 import re
 
 import matplotlib.pyplot as plt
@@ -18,18 +18,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.config import CURRENT_SEASON, MODELS_DIR, ROOT_DIR, SEASON_CODES
+from src.app_model import explain_prediction, explanation_note, load_app_bundle, match_row, train_app_bundle
+from src.config import CURRENT_SEASON, ROOT_DIR, SEASON_CODES
 from src.data import load_full_season_fixtures, load_raw_matches, load_upcoming_fixtures
-from src.evaluate import explain_single_match
 from src.features import (
-    FEATURE_COLUMNS,
     STAT_DESCRIPTIONS,
     build_feature_table,
     describe_feature,
     form_scope_text,
     parse_feature_name,
 )
-from src.train import CLASSES, CalibratedXGBoostModel
+from src.train import CLASSES, load_best_params
 
 CLASS_LABELS = {"H": "Home Win", "D": "Draw", "A": "Away Win"}
 
@@ -351,7 +350,7 @@ def build_season_comparison_table(_model, features_all: pd.DataFrame, full_seaso
     """
     season_features = features_all[features_all["season"] == CURRENT_SEASON].copy()
     if not season_features.empty:
-        proba = _model.predict_proba(season_features[FEATURE_COLUMNS])
+        proba = _model.predict_proba(season_features)
         pred_idx = proba.argmax(axis=1)
         season_features["predicted_class"] = [CLASSES[i] for i in pred_idx]
         season_features["confidence"] = proba[np.arange(len(proba)), pred_idx]
@@ -392,19 +391,30 @@ def build_season_comparison_table(_model, features_all: pd.DataFrame, full_seaso
     return pd.DataFrame(rows)
 
 
-@st.cache_resource(show_spinner="Loading match history and training the model (first run only, ~30s)...")
+@st.cache_resource(show_spinner="Loading match history and the model (first run only)...")
 def load_app_resources():
-    raw_all = load_raw_matches(seasons=SEASON_CODES + [CURRENT_SEASON])
-    features_all, state = build_feature_table(raw_all, return_state=True)
+    # The committed artifact (models/app_model.joblib) avoids retraining on
+    # every cold start; if it's missing or was pickled under different
+    # library versions, train once here instead (cached for the process).
+    bundle = load_app_bundle()
+    elo_params = bundle["elo_params"] if bundle else load_best_params().get("elo")
 
-    # Train on complete seasons only. The partial in-progress season stays
+    raw_all = load_raw_matches(seasons=SEASON_CODES)
+    try:
+        current = load_raw_matches(seasons=[CURRENT_SEASON])
+        raw_all = pd.concat([raw_all, current], ignore_index=True).sort_values("date").reset_index(drop=True)
+    except Exception:
+        # The in-progress season is a nice-to-have (current form/Elo), not
+        # a requirement: predictions still work from last season's end state.
+        logging.getLogger(__name__).warning("Could not load the current season", exc_info=True)
+    features_all, state = build_feature_table(raw_all, return_state=True, elo_params=elo_params)
+
+    # Trained on complete seasons only. The partial in-progress season stays
     # out of training (too small, still accumulating) but IS reflected in
     # `state`, so team form/Elo used for live predictions is current.
-    train_features = features_all[features_all["season"].isin(SEASON_CODES)]
-    with open(MODELS_DIR / "best_params.json") as f:
-        best_params = json.load(f)
-    model = CalibratedXGBoostModel(**best_params["xgboost"])
-    model.fit(train_features)
+    if bundle is None:
+        bundle = train_app_bundle(features_all)
+    model = bundle["model"]
 
     # Same season powers both the team dropdown roster and the standings
     # table: early in a season (fewer than 20 matches played, roughly one
@@ -418,7 +428,7 @@ def load_app_resources():
     current_teams = sorted(set(context_matches["home_team"]) | set(context_matches["away_team"]))
     standings_df = compute_standings(context_matches)
 
-    return model, state, current_teams, raw_all, standings_df, context_season, features_all
+    return model, bundle["model_name"], state, current_teams, raw_all, standings_df, context_season, features_all
 
 
 @st.cache_data
@@ -442,7 +452,25 @@ def load_full_season_fixtures_cached():
     return load_full_season_fixtures()
 
 
-model, state, teams, raw_all, standings_df, standings_season, features_all = load_app_resources()
+try:
+    model, model_name, state, teams, raw_all, standings_df, standings_season, features_all = load_app_resources()
+except Exception as exc:  # any startup failure should become a readable message, not a traceback
+    logging.getLogger(__name__).exception("Startup failed")
+    st.error(
+        "The app couldn't load its match data or model, so it can't make predictions right now. "
+        "The most common cause is football-data.co.uk rate-limiting or being unreachable; "
+        "wait a minute and reload the page.\n\n"
+        f"Details: `{type(exc).__name__}: {exc}`"
+    )
+    st.stop()
+
+MODEL_DISPLAY_NAMES = {
+    "logistic_regression": "Multinomial logistic regression",
+    "blend_lr_dixon_coles": "Logistic regression + Dixon-Coles blend",
+    "xgboost": "XGBoost",
+    "dixon_coles": "Dixon-Coles",
+}
+model_display = MODEL_DISPLAY_NAMES.get(model_name, model_name.replace("_", " "))
 
 st.title("Premier League Match Outcome Predictor", anchor=False)
 st.markdown(
@@ -451,19 +479,31 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(
-    "XGBoost + isotonic calibration, trained on 15 complete Premier League seasons "
-    "(2010/11-2025/26) with leakage-safe rolling form, home/away split form, and Elo features."
+    f"{model_display}, trained on {len(SEASON_CODES)} complete Premier League seasons "
+    f"({SEASON_CODES[0][:2]}/{SEASON_CODES[0][2:]}-{SEASON_CODES[-1][:2]}/{SEASON_CODES[-1][2:]}) with "
+    "leakage-safe rolling form, home/away split form, and Elo features. Chosen as the primary model by "
+    "walk-forward cross-validation on the tuning seasons."
 )
 
 results_table = load_results_table()
-if results_table is not None and "bookmaker_baseline" in results_table.index and "xgboost_calibrated" in results_table.index:
-    model_ll = results_table.loc["xgboost_calibrated", "log_loss"]
+if results_table is not None and {"bookmaker_baseline", model_name} <= set(results_table.index):
+    r = results_table.loc[model_name]
     market_ll = results_table.loc["bookmaker_baseline", "log_loss"]
-    verdict = "does **not** beat" if model_ll >= market_ll else "**beats**"
+    has_ci = "log_loss_diff_hi" in r
+    if has_ci and r["log_loss_diff_lo"] > 0:
+        verdict = "is **worse** than"
+    elif has_ci and r["log_loss_diff_hi"] < 0:
+        verdict = "**beats**"
+    elif has_ci:
+        verdict = "is **not distinguishable** from"
+    else:
+        verdict = "does **not** beat" if r["log_loss"] >= market_ll else "**beats**"
+    ci_text = (f"; difference {r['log_loss_diff_vs_bookmaker']:+.3f}, 95% CI "
+               f"[{r['log_loss_diff_lo']:+.3f}, {r['log_loss_diff_hi']:+.3f}]") if has_ci else ""
     st.info(
         f"Honesty check: on held-out test seasons, this model {verdict} the bookmaker's own "
-        f"odds (log loss {model_ll:.3f} vs {market_ll:.3f}). Treat the probabilities below as a "
-        "reasonable estimate to inspect, not a betting edge. See the README for the full analysis."
+        f"odds (log loss {r['log_loss']:.3f} vs {market_ll:.3f}{ci_text}). Treat the probabilities below "
+        "as a reasonable estimate to inspect, not a betting edge. See the README for the full analysis."
     )
 
 with st.expander(f"League table ({standings_season[:2]}/{standings_season[2:]})", expanded=False):
@@ -545,19 +585,19 @@ with st.container(border=True):
         st.caption("Hypothetical matchup and date, not tied to a real scheduled fixture.")
 
 feat = state.snapshot(home_team, away_team, pd.Timestamp(match_date))
-X_row = pd.DataFrame([feat])[FEATURE_COLUMNS]
+X_row = match_row(feat, home_team, away_team, pd.Timestamp(match_date))
 proba = model.predict_proba(X_row)[0]
 pred_idx = int(proba.argmax())
 predicted_class = CLASSES[pred_idx]
 confidence = proba[pred_idx]
-explanation = explain_single_match(model.base_model.model, X_row, class_idx=pred_idx)
+explanation = explain_prediction(model, X_row, class_idx=pred_idx)
 
 if predicted_class == "D":
     headline = "Draw"
 else:
     headline = f"{home_team if predicted_class == 'H' else away_team} to win"
 
-top_factor_text = describe_feature(explanation.iloc[0]["feature"], home_team, away_team)
+top_factor_text = describe_feature(explanation.iloc[0]["feature"], home_team, away_team) if not explanation.empty else None
 
 actual = None
 if pd.Timestamp(match_date) <= pd.Timestamp.now():
@@ -577,7 +617,8 @@ with st.container(border=True):
         unsafe_allow_html=True,
     )
     st.markdown(f"Model confidence: **{confidence:.0%}**.")
-    st.markdown(f"Single biggest factor: {top_factor_text}")
+    if top_factor_text:
+        st.markdown(f"Single biggest factor: {top_factor_text}")
     if actual is not None:
         correct = actual["result"] == predicted_class
         st.markdown(
@@ -589,27 +630,27 @@ with st.container(border=True):
             "This match has already been played, but its result hasn't synced into the "
             "historical data feed yet (that usually lags kickoff by about a day)."
         )
-    # A custom bar (not st.bar_chart) so each percentage can be printed right
-    # at its own bar's end: with a shared 0-1 axis, a separate metrics
-    # column left the number stranded far from short bars (a low-probability
-    # outcome's bar barely leaves the y-axis while its number sits all the
-    # way over in a fixed-position column), breaking the visual link between
-    # a value and the bar it belongs to.
-    outcomes = [CLASS_LABELS[c] for c in CLASSES]
-    fig, ax = _dark_figure(figsize=(8, 3))
-    bar_colors = [ACCENT_COLOR if c == predicted_class else SECONDARY_COLOR for c in CLASSES]
-    ax.barh(outcomes, proba, color=bar_colors)
-    ax.set_xlim(0, 1)
-    ax.set_xticks([])
-    for spine in ("top", "right", "bottom"):
-        ax.spines[spine].set_visible(False)
-    for i, p in enumerate(proba):
-        label_x, ha, color = p + 0.02, "left", TEXT_COLOR
-        if label_x > 0.9:
-            label_x, ha, color = p - 0.02, "right", BG_COLOR
-        ax.text(label_x, i, f"{p:.1%}", va="center", ha=ha, color=color, fontweight="bold", fontsize=12)
-    fig.tight_layout()
-    st.pyplot(fig)
+    # One stacked bar showing all three outcomes, not just the top pick:
+    # a draw is almost never the single most likely outcome, so the pick
+    # alone hides a ~25% probability that matters.
+    segments = []
+    for c, p, color in zip(CLASSES, proba, (ACCENT_COLOR, "#5f6461", SECONDARY_COLOR)):
+        label = {"H": home_team, "D": "Draw", "A": away_team}[c]
+        text = f"{html.escape(label)} {p:.0%}" if p >= 0.12 else f"{p:.0%}"
+        segments.append(
+            f"<div title='{html.escape(CLASS_LABELS[c])}: {p:.1%}' style='width:{p * 100:.2f}%; background:{color}; "
+            f"display:flex; align-items:center; justify-content:center; color:#ffffff; font-weight:600; "
+            f"font-size:14px; white-space:nowrap; overflow:hidden;'>{text}</div>"
+        )
+    aria = html.escape(f"Home win {proba[0]:.0%}, draw {proba[1]:.0%}, away win {proba[2]:.0%}", quote=True)
+    st.markdown(
+        f"<div role='img' aria-label='{aria}' style='display:flex; height:44px; border-radius:8px; "
+        f"overflow:hidden; margin:8px 0;'>" + "".join(segments) + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"Home win ({home_team}) {proba[0]:.1%} · Draw {proba[1]:.1%} · Away win ({away_team}) {proba[2]:.1%}"
+    )
 
 with st.container(border=True):
     st.header("Team comparison", anchor=False)
@@ -691,14 +732,17 @@ with st.container(border=True):
     )
     show_model_details = st.toggle("Show model details", value=False)
 
-    if show_model_details:
+    if show_model_details and not explanation.empty:
+        note = explanation_note(model)
+        if note:
+            st.caption(note)
         st.subheader(f"Top factors behind the '{CLASS_LABELS[CLASSES[pred_idx]]}' prediction", anchor=False)
         st.caption(f"Every bar below is labeled with the specific team it refers to: {home_team} (home) or {away_team} (away).")
         labels = [chart_label(f, home_team, away_team) for f in explanation["feature"]]
         fig, ax = _dark_figure(figsize=(8, 4))
         colors = [ACCENT_COLOR if v > 0 else SECONDARY_COLOR for v in explanation["shap_value"][::-1]]
         ax.barh(labels[::-1], explanation["shap_value"][::-1], color=colors)
-        ax.set_xlabel(f"SHAP value (positive bars push toward '{CLASS_LABELS[CLASSES[pred_idx]]}', negative bars push away from it)")
+        ax.set_xlabel(f"Contribution in log-odds (positive bars push toward '{CLASS_LABELS[CLASSES[pred_idx]]}', negative bars push away from it)")
         fig.tight_layout()
         st.pyplot(fig)
 
@@ -706,6 +750,7 @@ with st.container(border=True):
             for feature_name, label in zip(explanation["feature"], labels):
                 st.markdown(f"**{label}** (`{feature_name}`): {describe_feature(feature_name, home_team, away_team)}")
 
+    if show_model_details:
         with st.expander("Raw feature snapshot used for this prediction"):
             summary_rows = []
             for side, team in [("Home", home_team), ("Away", away_team)]:
