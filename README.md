@@ -294,6 +294,8 @@ src/
   train.py          all models, calibration, walk-forward tuning and CV model selection
   evaluate.py       test-season evaluation: bootstrap CIs, ablation, calibration, SHAP, Kelly audit
   app_model.py      builds/loads the small model artifact the app serves
+  app_helpers.py    app data helpers (recent form, standings, head-to-head); not model features
+  ui.py             app presentation: colour tokens, the one CSS function, HTML components
 tests/              leakage guards and model/metric tests (pytest, run in CI)
 app.py              Streamlit app
 models/             best_params.json, tuning/CV tables, app_model.joblib (6 KB)
