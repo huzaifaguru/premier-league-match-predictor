@@ -1,11 +1,11 @@
 """Streamlit app: pick a real upcoming Premier League fixture (or any two
 teams), see the model's home/draw/away probabilities, the factors behind
-them, and how the model performs against bookmaker odds.
+them, and how accurate the model is compared with bookmakers' own forecasts.
 
-Deliberately honest about what this is: a portfolio demonstration of a
-model that, on held-out historical data, does NOT beat the bookmaker's own
-odds (see the Model performance tab). It's shown as a probability estimate
-worth inspecting, not a betting signal.
+Deliberately honest about what this is: a forecasting and analytics
+demonstration. On held-out seasons the model is less accurate than the
+bookmakers' published probabilities (see the Performance tab), and the app
+has no betting features: no prices, no odds entry, no staking.
 
 Layout lives here; styling and HTML builders are in src/ui.py, and the
 non-model data helpers (form, standings, head-to-head) in src/app_helpers.py.
@@ -20,7 +20,7 @@ import streamlit as st
 from src.app_helpers import chart_label, compute_standings, head_to_head, lookup_actual_result, recent_form
 from src.app_model import explain_prediction, explanation_note, load_app_bundle, match_row, train_app_bundle
 from src.config import CURRENT_SEASON, ROOT_DIR, SEASON_CODES, TEST_SEASONS
-from src.data import load_full_season_fixtures, load_raw_matches, load_upcoming_fixtures
+from src.data import load_full_season_fixtures, load_raw_matches
 from src.features import FEATURE_COLUMNS, build_feature_table, describe_feature
 from src.train import CLASSES, load_best_params
 from src import ui
@@ -29,8 +29,8 @@ REPO_URL = "https://github.com/huzaifaguru/premier-league-match-predictor"
 REPORTS_DIR = ROOT_DIR / "reports"
 CLASS_LABELS = {"H": "Home Win", "D": "Draw", "A": "Away Win"}
 MODEL_DISPLAY_NAMES = {
-    "bookmaker_closing": "Bookmaker (Bet365 closing odds)",
-    "bookmaker_baseline": "Bookmaker (Bet365 pre-closing odds)",
+    "bookmaker_closing": "Bookmaker forecast (at kickoff)",
+    "bookmaker_baseline": "Bookmaker forecast (days before)",
     "blend_lr_dixon_coles": "Logistic regression + Dixon-Coles blend",
     "logistic_regression": "Logistic regression",
     "xgboost": "XGBoost",
@@ -183,14 +183,6 @@ def load_report_csv(name: str, index_col: str | None = None) -> pd.DataFrame | N
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner="Checking for live bookmaker odds...")
-def load_odds_fixtures_cached():
-    # Cached for an hour, not forever: odds move day to day while the app
-    # process stays up. Only used to enrich the full-season fixture list
-    # with odds when a selected match falls in its nearest-gameweek window.
-    return load_upcoming_fixtures()
-
-
 @st.cache_data(ttl=3600, show_spinner="Loading the full season schedule...")
 def load_full_season_fixtures_cached():
     return load_full_season_fixtures()
@@ -203,7 +195,7 @@ def load_full_season_fixtures_cached():
 st.markdown(ui.hero_html(
     "Premier League match predictor",
     f"Home, draw and away probabilities from {len(SEASON_CODES)} seasons of results, form and Elo ratings, "
-    "benchmarked honestly against the bookmakers.",
+    "tested honestly against the forecasts bookmakers publish.",
 ), unsafe_allow_html=True)
 
 try:
@@ -247,10 +239,8 @@ tab_predict, tab_perf, tab_how = st.tabs(["⚽ Predict", "\U0001F4CA Performance
 with tab_predict:
     now = pd.Timestamp.now()
 
-    # football-data.co.uk's fixtures.csv (odds source) only ever lists the
-    # nearest gameweek, so openfootball's full-season schedule is the list
-    # source; odds get merged in only where the two overlap.
-    odds_fixtures_df = load_odds_fixtures_cached()
+    # openfootball's full-season schedule: the fixture list, and where
+    # custom matchups get their real kickoff date from.
     full_season_df = load_full_season_fixtures_cached()
 
     recent_played = full_season_df[(full_season_df["kickoff"] < now) & (full_season_df["kickoff"] >= now - pd.Timedelta(days=4))]
@@ -264,7 +254,6 @@ with tab_predict:
         source = CUSTOM
         st.caption("Live fixture data isn't reachable right now, so only custom matchups are available.")
 
-    fixture_odds = None
     home_team = away_team = None
     match_date = None
     when_text = ""
@@ -320,16 +309,6 @@ with tab_predict:
                     match_date = pd.Timestamp(st.date_input("Match date", value=pd.Timestamp.today()))
                 when_text = f"{match_date.strftime('%a %d %b %Y')} · hypothetical"
 
-    # Live Bet365 odds, when bookmakers have posted them for this fixture
-    # (only the nearest gameweek, in practice).
-    if home_team and away_team and not odds_fixtures_df.empty:
-        odds_match = odds_fixtures_df[
-            (odds_fixtures_df["home_team"] == home_team) & (odds_fixtures_df["away_team"] == away_team)
-        ]
-        if not odds_match.empty and pd.notna(odds_match.iloc[0]["odds_home"]):
-            row = odds_match.iloc[0]
-            fixture_odds = (row["odds_home"], row["odds_draw"], row["odds_away"])
-
     if not (home_team and away_team):
         st.markdown(ui.empty_state_html(
             "Pick two teams to see the prediction",
@@ -370,8 +349,8 @@ with tab_predict:
         st.markdown(ui.match_card_html(home_team, away_team, when_text, proba, CLASSES, extra), unsafe_allow_html=True)
         if verdict:
             st.caption(
-                f"For context: on {len(TEST_SEASONS)} held-out seasons this model scored {verdict['verdict']} "
-                "the bookmaker's own odds. See the Performance tab."
+                f"For context: on {len(TEST_SEASONS)} held-out seasons this model was {verdict['verdict']} "
+                "bookmakers' own forecasts. See the Performance tab."
             )
 
         # --- Supporting stats (all already computed for this prediction) ---
@@ -417,24 +396,6 @@ with tab_predict:
                     "Score": h2h["home_goals"].astype(int).astype(str) + " - " + h2h["away_goals"].astype(int).astype(str),
                     "Away": h2h["away_team"],
                 }), hide_index=True, width="stretch")
-
-        with st.expander("Compare with bookmaker odds", expanded=fixture_odds is not None):
-            st.caption("This only builds the comparison chart. It doesn't change the model's probabilities above.")
-            if fixture_odds is not None:
-                odds_home, odds_draw, odds_away = fixture_odds
-                st.caption(f"Live Bet365 pre-match odds: home {odds_home:.2f} · draw {odds_draw:.2f} · away {odds_away:.2f}")
-            else:
-                st.caption("Enter decimal odds (e.g. Bet365) to see the market's de-vigged view next to the model's.")
-                oc1, oc2, oc3 = st.columns(3)
-                odds_home = oc1.number_input("Home odds", min_value=1.01, value=None, step=0.01, format="%.2f")
-                odds_draw = oc2.number_input("Draw odds", min_value=1.01, value=None, step=0.01, format="%.2f")
-                odds_away = oc3.number_input("Away odds", min_value=1.01, value=None, step=0.01, format="%.2f")
-            if odds_home and odds_draw and odds_away:
-                inv = [1 / odds_home, 1 / odds_draw, 1 / odds_away]
-                market_proba = [x / sum(inv) for x in inv]
-                compare_df = pd.DataFrame({"Model": proba, "Market (de-vigged)": market_proba},
-                                          index=[CLASS_LABELS[c] for c in CLASSES])
-                st.bar_chart(compare_df, horizontal=True, color=[ui.HOME, ui.AWAY])
 
         with st.expander("Why this prediction? (model details)"):
             if explanation.empty:
@@ -527,17 +488,17 @@ with tab_perf:
             n_worse = int((results_table.loc[others, "log_loss_diff_lo"] > 0).sum())
             if n_worse == len(others):
                 st.warning(
-                    f"**The bookmaker wins.** All {len(others)} models score worse than Bet365's own de-vigged odds, "
-                    "and in every case the 95% confidence interval of the difference excludes zero. The model is a "
-                    "reasonable estimate, not a way to beat the market."
+                    f"**The professionals are more accurate.** All {len(others)} models score worse than the "
+                    "probabilities implied by bookmakers' forecasts, and in every case the 95% confidence interval "
+                    "of the difference excludes zero. Read this model's numbers as a reasonable estimate, nothing more."
                 )
             else:
-                st.info(f"{len(others) - n_worse} of {len(others)} models are not clearly worse than the bookmaker's odds.")
+                st.info(f"{len(others) - n_worse} of {len(others)} models are not clearly less accurate than the bookmaker forecast.")
 
         if verdict:
             k1, k2, k3 = st.columns(3)
             k1.metric(f"{display_name(model_name)}: log loss", f"{verdict['model_ll']:.3f}", border=True)
-            k2.metric("Bookmaker odds: log loss", f"{verdict['market_ll']:.3f}", border=True)
+            k2.metric("Bookmaker forecast: log loss", f"{verdict['market_ll']:.3f}", border=True)
             if "diff" in verdict:
                 k3.metric("Difference (model minus bookmaker)", f"{verdict['diff']:+.3f}",
                           delta=f"95% CI {verdict['lo']:+.3f} to {verdict['hi']:+.3f}", delta_color="off",
@@ -567,19 +528,15 @@ with tab_perf:
                 st.image(str(path), width="stretch")
                 st.caption(caption)
 
-        # The wide three-panel calibration plot gets the full width; the two
-        # taller charts sit side by side on desktop and stack on a phone.
+        # The wide three-panel calibration plot gets the full width; the tall
+        # SHAP chart is kept to part of the width so it doesn't dominate.
         report_plot("calibration_plot.png", "Calibration: predicted probability vs how often it happened",
                     "Points near the dashed diagonal mean the probabilities can be taken at face value.")
-        p1, p2 = st.columns(2)
+        p1, _ = st.columns([3, 2])
         with p1:
             report_plot("shap_importance.png", "Feature importance (XGBoost, SHAP)",
                         "The Elo rating gap dominates. SHAP splits credit between correlated Elo features, "
                         "so the ablation above is the cleaner evidence.")
-        with p2:
-            report_plot("kelly_backtest.png", "Paper-money betting backtest",
-                        "Staking whenever the model disagrees with the odds loses steadily: the apparent edges "
-                        "are noise.")
 
         st.markdown(f"Full numbers, including every pairwise comparison: "
                     f"[evaluation report]({REPO_URL}/blob/main/reports/evaluation_report.md).")
@@ -614,7 +571,8 @@ with tab_how:
     st.subheader("How it works", anchor=False)
     st.markdown(f"""
 **Data.** Every Premier League result from {first} to {last} ({len(SEASON_CODES)} seasons) from
-[football-data.co.uk](https://www.football-data.co.uk/): goals, shots, shots on target, corners and Bet365 odds.
+[football-data.co.uk](https://www.football-data.co.uk/): goals, shots, shots on target and corners, plus bookmakers' pre-match
+forecasts, which are used only as the benchmark the model is scored against, never as an input.
 The current season is added as it's played, so team form and ratings stay up to date.
 
 **Features.** For each match, {len(FEATURE_COLUMNS)} numbers built only from what was known *before* kickoff:
@@ -628,18 +586,19 @@ next season, never a random shuffle.
 
 **Honest testing.** The last {len(TEST_SEASONS)} seasons ({season_label(TEST_SEASONS[0])} to
 {season_label(TEST_SEASONS[-1])}) were never used for tuning or choosing the model. They're only used to score
-the finished models, against the bookmaker's own odds with the margin removed.
+the finished models, alongside the bookmakers' own forecasts (their probabilities with the profit margin
+removed).
 """)
     st.subheader("Limitations", anchor=False)
     st.markdown("""
 - **No lineups, injuries or news.** The bookmaker knows who's playing; this model doesn't. That's the main
-  reason it can't beat the odds.
+  reason it's less accurate than their forecasts.
 - **Draws are almost never the top pick.** They rarely have the single highest probability, so read the full
   home / draw / away bar, not just the headline.
 - **Newly promoted teams start from an average rating**, so early-season predictions for them are rough.
 - **Picked matchups take their date from the fixture list**, so rest days are real. Pairings that aren't on
   it (or when the schedule is offline) ask for a date instead, and use each team's current form and rating.
-- **Not betting advice.** A backtest of betting on the model's "edges" lost money steadily.
+- **Not for betting.** It's less accurate than bookmakers' own forecasts, so its numbers are no basis for a bet.
 """)
 
 st.markdown(ui.footer_html(REPO_URL), unsafe_allow_html=True)
