@@ -493,9 +493,9 @@ def season_track_record():
         s1.metric(f"Correct picks ({len(scored_rows)} played)", f"{correct.mean():.0%}", border=True,
                   help="Share of all played matches where the most likely outcome was the actual result.")
         if had_winner.any():
-            s2.metric(f"Correct picks, excluding draws ({int(had_winner.sum())} with a winner)",
+            s2.metric(f"Correct picks, draws excluded ({int(had_winner.sum())})",
                       f"{correct[had_winner].mean():.0%}", border=True,
-                      help="The same hit rate, counting only matches that didn't end in a draw. The model almost "
+                      help=f"The same hit rate over the {int(had_winner.sum())} matches that didn't end in a draw. The model almost "
                            "never picks a draw, so this shows how it does at calling the winner. It's higher "
                            "than the overall figure because the drawn matches are left out.")
         s3.metric("Actual draws vs predicted draws",
@@ -545,8 +545,8 @@ with tab_perf:
         elif model_name in results_table.index:
             r = results_table.loc[model_name]
             k1, k2, k3 = st.columns(3)
-            k1.metric(f"{display_name(model_name)}: accuracy", f"{r['accuracy']:.1%}", border=True,
-                      help="How often the most likely outcome was the actual result.")
+            k1.metric("Accuracy", f"{r['accuracy']:.1%}", border=True,
+                      help=f"{display_name(model_name)}: how often its most likely outcome was the actual result.")
             k2.metric("Log loss", f"{r['log_loss']:.3f}", border=True,
                       delta=f"95% CI {r['log_loss_lo']:.3f} to {r['log_loss_hi']:.3f}" if "log_loss_lo" in r else None,
                       delta_color="off", delta_arrow="off", help="Lower is better. Penalises confident wrong predictions.")
