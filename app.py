@@ -281,13 +281,6 @@ with tab_predict:
         away_team = fixture_row["away_team"]
         match_date = fixture_row["kickoff"]
         when_text = match_date.strftime("%a %d %b %Y, %H:%M UK")
-
-        odds_match = odds_fixtures_df[
-            (odds_fixtures_df["home_team"] == home_team) & (odds_fixtures_df["away_team"] == away_team)
-        ] if not odds_fixtures_df.empty else odds_fixtures_df
-        if not odds_match.empty and pd.notna(odds_match.iloc[0]["odds_home"]):
-            row = odds_match.iloc[0]
-            fixture_odds = (row["odds_home"], row["odds_draw"], row["odds_away"])
     else:
         c_home, c_vs, c_away = st.columns([5, 1, 5], vertical_alignment="center")
         with c_home:
@@ -303,10 +296,39 @@ with tab_predict:
                 away_options = [t for t in teams if t != home_team]
                 away_team = st.selectbox("Away team", away_options, index=None, placeholder="Choose the away team")
                 slot.markdown(ui.team_head_html(away_team, "Away"), unsafe_allow_html=True)
-        d_col, _ = st.columns([1, 2])
-        with d_col:
-            match_date = pd.Timestamp(st.date_input("Match date", value=pd.Timestamp.today()))
-        when_text = f"{match_date.strftime('%a %d %b %Y')} · hypothetical"
+        if home_team and away_team:
+            # Each team hosts each other team exactly once a season, so the
+            # home/away pairing identifies one fixture on the schedule: take
+            # its real kickoff instead of asking for a date.
+            scheduled = full_season_df[
+                (full_season_df["home_team"] == home_team) & (full_season_df["away_team"] == away_team)
+            ] if not full_season_df.empty else full_season_df
+            if not scheduled.empty:
+                fixture_row = scheduled.iloc[0]
+                match_date = fixture_row["kickoff"]
+                when_text = match_date.strftime("%a %d %b %Y, %H:%M UK")
+                status = "Played" if pd.notna(fixture_row["home_goals"]) else "Kickoff"
+                st.caption(f"\U0001F4C5 {status}: {when_text}, from the {season_label(CURRENT_SEASON)} "
+                           "Premier League fixture list.")
+            else:
+                # Not on this season's schedule (or the schedule is offline):
+                # fall back to asking, and say why.
+                st.caption(f"This matchup isn't on the {season_label(CURRENT_SEASON)} fixture list, "
+                           "so pick a date for a hypothetical match.")
+                d_col, _ = st.columns([1, 2])
+                with d_col:
+                    match_date = pd.Timestamp(st.date_input("Match date", value=pd.Timestamp.today()))
+                when_text = f"{match_date.strftime('%a %d %b %Y')} · hypothetical"
+
+    # Live Bet365 odds, when bookmakers have posted them for this fixture
+    # (only the nearest gameweek, in practice).
+    if home_team and away_team and not odds_fixtures_df.empty:
+        odds_match = odds_fixtures_df[
+            (odds_fixtures_df["home_team"] == home_team) & (odds_fixtures_df["away_team"] == away_team)
+        ]
+        if not odds_match.empty and pd.notna(odds_match.iloc[0]["odds_home"]):
+            row = odds_match.iloc[0]
+            fixture_odds = (row["odds_home"], row["odds_draw"], row["odds_away"])
 
     if not (home_team and away_team):
         st.markdown(ui.empty_state_html(
@@ -615,7 +637,8 @@ the finished models, against the bookmaker's own odds with the margin removed.
 - **Draws are almost never the top pick.** They rarely have the single highest probability, so read the full
   home / draw / away bar, not just the headline.
 - **Newly promoted teams start from an average rating**, so early-season predictions for them are rough.
-- **Hypothetical matchups** use each team's current form and rating; the date you pick only changes rest days.
+- **Picked matchups take their date from the fixture list**, so rest days are real. Pairings that aren't on
+  it (or when the schedule is offline) ask for a date instead, and use each team's current form and rating.
 - **Not betting advice.** A backtest of betting on the model's "edges" lost money steadily.
 """)
 
