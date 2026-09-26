@@ -1,11 +1,11 @@
 """Streamlit app: pick a real upcoming Premier League fixture (or any two
 teams), see the model's home/draw/away probabilities, the factors behind
-them, and how accurate the model is compared with bookmakers' own forecasts.
+them, and how accurate the model is on seasons it never saw.
 
-Deliberately honest about what this is: a forecasting and analytics
-demonstration. On held-out seasons the model is less accurate than the
-bookmakers' published probabilities (see the Performance tab), and the app
-has no betting features: no prices, no odds entry, no staking.
+A forecasting and analytics demonstration with no betting features. The
+comparison against bookmakers' forecasts lives in the README and reports/;
+the app only brings it to the front if the served model is at least as
+accurate (see SHOW_BOOKMAKER).
 
 Layout lives here; styling and HTML builders are in src/ui.py, and the
 non-model data helpers (form, standings, head-to-head) in src/app_helpers.py.
@@ -195,7 +195,7 @@ def load_full_season_fixtures_cached():
 st.markdown(ui.hero_html(
     "Premier League match predictor",
     f"Home, draw and away probabilities from {len(SEASON_CODES)} seasons of results, form and Elo ratings, "
-    "tested honestly against the forecasts bookmakers publish.",
+    "tested on seasons the model never saw.",
 ), unsafe_allow_html=True)
 
 try:
@@ -229,6 +229,10 @@ def bookmaker_verdict() -> dict | None:
 
 
 verdict = bookmaker_verdict()
+# The bookmaker benchmark stays in the background (README, reports/). The
+# app only shows it when the served model is at least as accurate.
+SHOW_BOOKMAKER = bool(verdict) and verdict["verdict"] != "worse than"
+BOOKMAKER_MODELS = {"bookmaker_baseline", "bookmaker_closing"}
 
 tab_predict, tab_perf, tab_how = st.tabs(["⚽ Predict", "\U0001F4CA Performance", "\U0001F4D6 How it works"])
 
@@ -347,7 +351,7 @@ with tab_predict:
             extra.append(f"<strong>Biggest factor:</strong> {html.escape(top_factor_text)}")
 
         st.markdown(ui.match_card_html(home_team, away_team, when_text, proba, CLASSES, extra), unsafe_allow_html=True)
-        if verdict:
+        if SHOW_BOOKMAKER:
             st.caption(
                 f"For context: on {len(TEST_SEASONS)} held-out seasons this model was {verdict['verdict']} "
                 "bookmakers' own forecasts. See the Performance tab."
@@ -455,7 +459,7 @@ def fmt_diff(row, metric="log_loss"):
 def results_display(table: pd.DataFrame, models: list[str]) -> pd.DataFrame:
     rows = []
     for m in models:
-        if m not in table.index:
+        if m not in table.index or (m in BOOKMAKER_MODELS and not SHOW_BOOKMAKER):
             continue
         r = table.loc[m]
         degenerate = m == "home_win_baseline"  # 100/0/0 predictions: log loss isn't meaningful
@@ -465,8 +469,9 @@ def results_display(table: pd.DataFrame, models: list[str]) -> pd.DataFrame:
             "Log loss [95% CI]": "not meaningful" if degenerate else fmt_ci(r, "log_loss"),
             "Brier": f"{r['brier' if 'brier' in r else 'brier_score']:.3f}",
             "RPS": f"{r['rps']:.3f}" if "rps" in r else "",
-            "Log loss vs bookmaker [95% CI]": "" if degenerate or m == "bookmaker_baseline" else fmt_diff(r),
         })
+        if SHOW_BOOKMAKER:
+            rows[-1]["Log loss vs bookmaker [95% CI]"] = "" if degenerate or m == "bookmaker_baseline" else fmt_diff(r)
     return pd.DataFrame(rows)
 
 
@@ -484,7 +489,7 @@ with tab_perf:
         )
 
         others = [m for m in results_table.index if m not in ("bookmaker_baseline", "bookmaker_closing", "home_win_baseline")]
-        if "log_loss_diff_lo" in results_table and others:
+        if SHOW_BOOKMAKER and "log_loss_diff_lo" in results_table and others:
             n_worse = int((results_table.loc[others, "log_loss_diff_lo"] > 0).sum())
             if n_worse == len(others):
                 st.warning(
@@ -495,7 +500,7 @@ with tab_perf:
             else:
                 st.info(f"{len(others) - n_worse} of {len(others)} models are not clearly less accurate than the bookmaker forecast.")
 
-        if verdict:
+        if SHOW_BOOKMAKER:
             k1, k2, k3 = st.columns(3)
             k1.metric(f"{display_name(model_name)}: log loss", f"{verdict['model_ll']:.3f}", border=True)
             k2.metric("Bookmaker forecast: log loss", f"{verdict['market_ll']:.3f}", border=True)
@@ -503,6 +508,16 @@ with tab_perf:
                 k3.metric("Difference (model minus bookmaker)", f"{verdict['diff']:+.3f}",
                           delta=f"95% CI {verdict['lo']:+.3f} to {verdict['hi']:+.3f}", delta_color="off",
                           border=True)
+        elif model_name in results_table.index:
+            r = results_table.loc[model_name]
+            k1, k2, k3 = st.columns(3)
+            k1.metric(f"{display_name(model_name)}: accuracy", f"{r['accuracy']:.1%}", border=True,
+                      help="How often the most likely outcome was the actual result.")
+            k2.metric("Log loss", f"{r['log_loss']:.3f}", border=True,
+                      delta=f"95% CI {r['log_loss_lo']:.3f} to {r['log_loss_hi']:.3f}" if "log_loss_lo" in r else None,
+                      delta_color="off", help="Lower is better. Penalises confident wrong predictions.")
+            k3.metric("Ranked probability score", f"{r['rps']:.3f}" if "rps" in r else "n/a", border=True,
+                      help="Lower is better. Treats home / draw / away as ordered.")
 
         st.dataframe(results_display(results_table, MAIN_TABLE_MODELS), hide_index=True, width="stretch")
         st.caption("RPS is the ranked probability score, which treats home / draw / away as ordered. The confidence "
@@ -571,8 +586,7 @@ with tab_how:
     st.subheader("How it works", anchor=False)
     st.markdown(f"""
 **Data.** Every Premier League result from {first} to {last} ({len(SEASON_CODES)} seasons) from
-[football-data.co.uk](https://www.football-data.co.uk/): goals, shots, shots on target and corners, plus bookmakers' pre-match
-forecasts, which are used only as the benchmark the model is scored against, never as an input.
+[football-data.co.uk](https://www.football-data.co.uk/): goals, shots, shots on target and corners.
 The current season is added as it's played, so team form and ratings stay up to date.
 
 **Features.** For each match, {len(FEATURE_COLUMNS)} numbers built only from what was known *before* kickoff:
@@ -586,19 +600,18 @@ next season, never a random shuffle.
 
 **Honest testing.** The last {len(TEST_SEASONS)} seasons ({season_label(TEST_SEASONS[0])} to
 {season_label(TEST_SEASONS[-1])}) were never used for tuning or choosing the model. They're only used to score
-the finished models, alongside the bookmakers' own forecasts (their probabilities with the profit margin
-removed).
+the finished models.
 """)
     st.subheader("Limitations", anchor=False)
     st.markdown("""
-- **No lineups, injuries or news.** The bookmaker knows who's playing; this model doesn't. That's the main
-  reason it's less accurate than their forecasts.
+- **No lineups, injuries or news.** The model only sees past results, so it can't react to team news
+  announced before kickoff.
 - **Draws are almost never the top pick.** They rarely have the single highest probability, so read the full
   home / draw / away bar, not just the headline.
 - **Newly promoted teams start from an average rating**, so early-season predictions for them are rough.
 - **Picked matchups take their date from the fixture list**, so rest days are real. Pairings that aren't on
   it (or when the schedule is offline) ask for a date instead, and use each team's current form and rating.
-- **Not for betting.** It's less accurate than bookmakers' own forecasts, so its numbers are no basis for a bet.
+- **Not for betting.** These are estimates from past results only, with no team news, and no basis for a bet.
 """)
 
 st.markdown(ui.footer_html(REPO_URL), unsafe_allow_html=True)
