@@ -3,7 +3,7 @@
 [![CI](https://github.com/huzaifaguru/premier-league-match-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/huzaifaguru/premier-league-match-predictor/actions/workflows/ci.yml)
 
 > **TL;DR.** Six models (logistic regression, XGBoost, time-decayed Dixon-Coles, an LR + Dixon-Coles blend, and calibrated variants) were tuned by walk-forward CV and tested on 1,140 held-out matches (2023/24 to 2025/26).
-> The best of them reaches log loss 0.981 against 0.966 for Bet365's de-vigged pre-closing odds. The gap is statistically clear (95% CI of the difference: +0.005 to +0.024), so **no model beats the bookmaker**.
+> The benchmark is the bookmakers' own forecast (the probabilities implied by Bet365's prices, with the profit margin removed). The best model reaches log loss 0.981 against the bookmaker's 0.966, a statistically clear gap (95% CI of the difference: +0.005 to +0.024), so **no model is as accurate as the professional forecast**.
 > Elo team strength carries almost all of the signal: an Elo-only model is within 0.003 log loss of the full 59-feature model, and the difference is not significant.
 
 **Live app:** <!-- TODO: paste your Streamlit Community Cloud URL here --> _coming soon_ · **[Results](#results)** · **[Limitations](#limitations)** · **[What I'd do next](#what-id-do-next)**
@@ -13,26 +13,30 @@
 Given two Premier League teams and a match date, predict the probability
 of a home win, draw, or away win using only information available before
 kickoff. The interesting part of this problem isn't fitting a classifier.
-It's that the "market" (bookmaker odds) is already a strong, well-known
-baseline, so the real question is whether feature engineering + ML can add
-anything on top of what odds-setters already price in, and if not, why
-not. This project treats "no" as a fully acceptable, reportable answer.
+It's that bookmakers already publish a very strong forecast for every
+match, built by professional analysts with access to team news. So the
+real question is whether feature engineering + ML can match that forecast
+from public match data alone, and if not, why not. This project treats
+"no" as a fully acceptable, reportable answer. It is a forecasting and
+evaluation study, not a betting tool.
 
 ## Method
 
 **Data.** 6,080 Premier League matches, 16 seasons (2010/11 to 2025/26),
 downloaded from [football-data.co.uk](https://www.football-data.co.uk/)
 and cached locally (`src/data.py`). Includes goals, shots, shots on
-target, corners, and Bet365 odds. Two sets of Bet365 prices are used:
+target, corners, and Bet365 prices, which are used only to build the
+benchmark. A bookmaker's price converts to a probability (1 / price);
+dividing by the total across home/draw/away removes the bookmaker's profit
+margin and leaves its forecast. Two versions of that forecast are used:
 
-- **Pre-closing odds** (`B365H/D/A`), present in every season. Per
-  football-data.co.uk's own notes these are collected on Friday afternoon
-  for weekend matches and Tuesday afternoon for midweek ones, so they are
-  *not* closing odds. They are the main bookmaker benchmark and the prices
-  the Kelly backtest stakes against.
-- **Closing odds** (`B365CH/CD/CA`), published only from 2019/20, so
-  available for all three test seasons. Reported as a second, stronger
-  benchmark, since closing prices include the late news.
+- **Days before kickoff** (`B365H/D/A`), present in every season. Per
+  football-data.co.uk's own notes these prices are collected on Friday
+  afternoon for weekend matches and Tuesday afternoon for midweek ones.
+  This is the main benchmark.
+- **At kickoff** (the closing prices, `B365CH/CD/CA`), published only from
+  2019/20, so available for all three test seasons. A second, stronger
+  benchmark, since it includes late team news.
 
 **Features (`src/features.py`), 59 total, all leakage-safe.** A single
 forward pass through matches in date order builds each match's features
@@ -45,9 +49,9 @@ only from information strictly before it:
 - An Elo rating per team, updated after every match, partly reverted to
   the mean at each season boundary to approximate summer squad turnover.
   K-factor, home advantage and carryover are tuned (see below).
-- De-vigged bookmaker implied probabilities, computed but **excluded**
-  from the trainable feature set. If the model could see the market's
-  odds, "did we beat the bookmaker" would be a meaningless question.
+- The bookmaker forecast is computed alongside but **excluded** from the
+  model's inputs. If the model could see it, comparing the two would be
+  meaningless.
 
 Leakage safety is tested, not just asserted. `tests/test_features.py`
 includes a test that changes a future match's result and checks that
@@ -70,7 +74,7 @@ suite has 19 tests in all and runs in CI.
 
 **Models.**
 - Majority-class baseline (always predict a home win).
-- Bookmaker: Bet365 de-vigged pre-closing odds, and closing odds.
+- Bookmaker forecast: Bet365's probabilities with the margin removed, days before kickoff and at kickoff.
 - Multinomial logistic regression.
 - XGBoost.
 - [Dixon-Coles (1997)](https://en.wikipedia.org/wiki/Dixon%E2%80%93Coles_model)
@@ -96,8 +100,8 @@ home/draw/away as ordered. Lower is better for log loss, Brier and RPS.
 
 | Model | CV log loss | Accuracy | Log loss [95% CI] | Brier | RPS | Δ log loss vs bookmaker [95% CI] |
 |---|---|---|---|---|---|---|
-| Bookmaker, closing odds | n/a | 0.550 | 0.960 [0.933, 0.988] | 0.570 | 0.194 | -0.006 [-0.010, -0.002] |
-| **Bookmaker, pre-closing odds** | 0.959 | 0.542 | **0.966** [0.939, 0.994] | 0.574 | 0.196 | (reference) |
+| Bookmaker forecast, at kickoff | n/a | 0.550 | 0.960 [0.933, 0.988] | 0.570 | 0.194 | -0.006 [-0.010, -0.002] |
+| **Bookmaker forecast, days before** | 0.959 | 0.542 | **0.966** [0.939, 0.994] | 0.574 | 0.196 | (reference) |
 | Logistic regression | 0.982 | 0.536 | 0.981 [0.953, 1.007] | 0.584 | 0.200 | +0.015 [+0.005, +0.024] |
 | LR + Dixon-Coles blend (primary, chosen by CV) | **0.975** | 0.527 | 0.982 [0.956, 1.008] | 0.585 | 0.201 | +0.016 [+0.008, +0.024] |
 | XGBoost | 0.979 | 0.532 | 0.991 [0.963, 1.020] | 0.590 | 0.202 | +0.025 [+0.016, +0.034] |
@@ -108,9 +112,9 @@ home/draw/away as ordered. Lower is better for log loss, Brier and RPS.
 \* *A degenerate 100/0/0 prediction scores the numerical floor on every
 non-home-win match; accuracy is the fair number for this baseline.*
 
-**No model beats the bookmaker.** Every model's log loss, Brier and RPS
-difference from the pre-closing odds has a 95% CI entirely above zero, and
-the closing odds are better still. Among the models:
+**No model is as accurate as the bookmaker forecast.** Every model's log
+loss, Brier and RPS difference from it has a 95% CI entirely above zero,
+and the at-kickoff forecast is better still. Among the models:
 
 - **The blend won CV but not the test.** It had the best tuning-season CV
   score, so it was named the primary model in advance (and it is what the
@@ -128,7 +132,7 @@ Full tables (all calibration variants, Brier/RPS CIs, every pairwise
 comparison, block bootstrap) are in
 [`reports/evaluation_report.md`](reports/evaluation_report.md).
 
-**Why the market wins: team strength carries almost all the signal.**
+**Why the professionals win: team strength carries almost all the signal.**
 A feature ablation, with each feature set's hyperparameters tuned
 separately by CV:
 
@@ -148,9 +152,9 @@ correlated Elo features in ways that are hard to interpret.
 
 ![SHAP feature importance](reports/shap_importance.png)
 
-The market already prices team strength, plus injuries, lineups and news
-that aren't in this dataset. A model built from a strict subset of what
-the market knows has a low ceiling by construction.
+The bookmakers' forecast already accounts for team strength, plus
+injuries, lineups and news that aren't in this dataset. A model built from
+a strict subset of what they know has a low ceiling by construction.
 
 **Draws are never the top pick.** The blend's confusion matrix on the test
 seasons:
@@ -192,60 +196,21 @@ probability to some outcomes (1 test match for XGBoost, 3 for logistic
 regression), each of which then costs about 36 nats of log loss. That is
 what drove the earlier isotonic XGBoost result from 0.994 to 1.049.
 
-**Kelly-criterion backtest: why "positive EV" on 88% of matches was an
-illusion.** As a check on whether the probabilities are decision-useful
-(paper money only, not betting advice): stake half-Kelly (max 20% of the
-bankroll) against Bet365's **pre-closing** odds whenever the model's
-claimed EV is positive. Thresholds are fixed in advance at 0 and 5% and
-were never tuned on the test seasons.
-
-![Kelly backtest](reports/kelly_backtest.png)
-
-Every model strategy loses nearly the whole bankroll (the blend ends at
-0.0017x, XGBoost at 0.0005x). The original raw XGBoost claimed positive
-EV on 88% of matches, with a mean claimed EV of +25% and a 24% win rate.
-An audit of where that came from:
-
-1. **Not a data bug.** Re-reading the raw CSVs independently and joining
-   on date and teams, all 1,140 rows carry the correct match's odds and
-   result. The shortest-priced outcome wins 54% of the time, and 64% of
-   favourites are home teams, both as expected. (The bookmaker's 0.966 log
-   loss would be impossible with misaligned odds anyway.)
-2. **It's the winner's curse.** The model's probabilities differ from the
-   market's by noise of about 0.18 in log-probability. Simulating a
-   "model" that is *exactly* the market's probabilities plus noise of that
-   size, then betting on each match's max-EV outcome, produces "positive
-   EV" on 85% of matches with a mean claimed edge of +12%, while the true
-   EV of those bets is -5% (the bookmaker's margin). Picking the largest
-   of three noisy EV estimates almost guarantees one of them looks
-   positive. The real model (88%, +19% for the retuned XGBoost) behaves
-   just like pure noise.
-3. **The claimed edges pile up on longshots.** Grouped by odds, the
-   model's claimed EV rises from +4% at odds under 1.5 to +59% at odds
-   over 8, while the market-implied EV of the same bets stays flat at
-   about -5% in every bucket. At odds over 8 the model said 13% on
-   average; the bets won 5.5% of the time. Relative errors in small
-   probabilities turn into huge claimed edges.
-4. **Not favourite-longshot bias in the prices.** Across all 16 seasons,
-   Bet365's de-vigged probabilities match actual frequencies in every odds
-   bucket, including longshots (8.4% implied vs 9.2% actual at odds over
-   8). In the three test seasons longshots did underperform (6.3% actual),
-   which made the losses worse, but that's a small, noisy sample (144
-   outcomes).
-5. **Closing-line value is negative.** The prices of the bets placed
-   moved *against* them by kickoff (mean CLV -4.1% for XGBoost, -3.6% for
-   the blend). A real edge shows up as positive CLV.
-
-A materiality threshold doesn't rescue it: requiring 5% claimed edge
-still loses almost everything, because the claimed edges are noise, not
-small real edges. Staking the bookmaker's own de-vigged probabilities
-against its own odds correctly finds zero bets, a sanity check that the
-Kelly code itself works.
+**A note on apparent "edges".** When the model and the bookmaker
+disagree, it is tempting to read that as the model spotting value. It
+isn't. The model's probabilities differ from the bookmaker's by random
+noise, and whenever you pick the largest of three noisy differences, one
+almost always looks favourable (the "winner's curse"). A simulation with
+pure noise of the same size reproduces the effect, and a paper-money
+stress test of acting on those differences lost steadily. The details,
+kept as a technical diagnostic, are in
+[`reports/evaluation_report.md`](reports/evaluation_report.md). This
+project is not a betting tool, and nothing in it is betting advice.
 
 ## Limitations
 
 - **No lineup, injury, or news information.** This is the single largest
-  gap vs. the bookmaker, whose closing odds price in exactly this.
+  gap vs. the bookmaker, whose at-kickoff forecast includes exactly this.
 - **Only three test seasons.** Confidence intervals are about ±0.03 on log
   loss for a single model. Paired differences are much tighter, but
   season-level effects (one unusual season) can't be separated from
@@ -262,8 +227,6 @@ Kelly code itself works.
 - **The blend weight and every hyperparameter were picked on the same CV
   folds that score them**, so CV numbers are slightly optimistic. This
   applies to all models alike, and the test seasons were never used.
-- **Kelly sizing ignores parameter uncertainty.** Half-Kelly with a
-  flat edge threshold is a simplification.
 
 ## What I'd Do Next
 
@@ -275,10 +238,10 @@ feature ablation, and alternative calibration methods.
    most likely way to close some of the gap to the bookmaker.
 2. **A proper stacking model**: learn the blend on out-of-fold
    predictions with a meta-model, rather than a single linear weight.
-3. **Pinnacle closing odds** as the market benchmark (available from
-   2012/13), since Pinnacle is widely regarded as the sharpest book.
+3. **A second bookmaker's forecast** (Pinnacle, available from
+   2012/13), widely regarded as the most accurate bookmaker forecast.
 4. **Bayesian team ratings** (e.g. a hierarchical Dixon-Coles), giving
-   each prediction an uncertainty that Kelly staking could shrink by.
+   each prediction an honest uncertainty band.
 5. **Tune the rolling-window lengths**, the last untuned feature choice.
 
 ## Repo Structure
@@ -292,7 +255,7 @@ src/
   data.py           download + cache raw CSVs from football-data.co.uk
   features.py       leakage-safe rolling form, Elo, rest days (LeagueState)
   train.py          all models, calibration, walk-forward tuning and CV model selection
-  evaluate.py       test-season evaluation: bootstrap CIs, ablation, calibration, SHAP, Kelly audit
+  evaluate.py       test-season evaluation: bootstrap CIs, ablation, calibration, SHAP, "edge" diagnostic
   app_model.py      builds/loads the small model artifact the app serves
   app_helpers.py    app data helpers (recent form, standings, head-to-head); not model features
   ui.py             app presentation: colour tokens, the one CSS function, HTML components

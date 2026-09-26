@@ -253,7 +253,9 @@ def form_pills_html(form_rows: list[dict]) -> str:
 
 
 def footer_html(repo_url: str) -> str:
-    return (f"<div class='plm-footer'><span>Predictions are for education and analytics, not betting advice.</span>"
+    return (f"<div class='plm-footer'><span>For education and analytics only. Not betting advice. "
+            f"If gambling is causing you problems, free help is at "
+            f"<a href='https://www.begambleaware.org' target='_blank' rel='noopener'>BeGambleAware</a>.</span>"
             f"<span><a href='{repo_url}' target='_blank' rel='noopener'>Source code on GitHub</a></span></div>")
 
 
