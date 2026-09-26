@@ -475,9 +475,43 @@ def results_display(table: pd.DataFrame, models: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def season_track_record():
+    """This season's played matches: the model's pre-match pick next to the
+    real result, with headline hit rates."""
+    st.subheader(f"This season so far ({season_label(CURRENT_SEASON)})", anchor=False)
+    st.caption("Every match this season: already-played matches show the model's pre-match pick next to what "
+               "actually happened, so the track record can be checked directly.")
+    season_table = build_season_comparison_table(model, features_all, full_season_df)
+    played_rows = season_table[season_table["Actual result"] != "Not played yet"] if not season_table.empty else season_table
+    scored_rows = played_rows[played_rows["Correct?"] != ""] if not played_rows.empty else played_rows
+    if not scored_rows.empty:
+        correct = scored_rows["Correct?"].str.endswith("Yes")
+        home_goals = scored_rows["Actual result"].str.split(" - ").str[0].astype(int)
+        away_goals = scored_rows["Actual result"].str.split(" - ").str[1].astype(int)
+        had_winner = home_goals != away_goals
+        s1, s2, s3 = st.columns(3)
+        s1.metric(f"Correct picks ({len(scored_rows)} played)", f"{correct.mean():.0%}", border=True,
+                  help="Share of all played matches where the most likely outcome was the actual result.")
+        if had_winner.any():
+            s2.metric(f"Correct picks, excluding draws ({int(had_winner.sum())} with a winner)",
+                      f"{correct[had_winner].mean():.0%}", border=True,
+                      help="The same hit rate, counting only matches that didn't end in a draw. The model almost "
+                           "never picks a draw, so this shows how it does at calling the winner. It's higher "
+                           "than the overall figure because the drawn matches are left out.")
+        s3.metric("Actual draws vs predicted draws",
+                  f"{int((~had_winner).sum())} vs {int((scored_rows['Predicted'] == 'Draw').sum())}",
+                  border=True, help="Draws are rarely the single most likely outcome, so the top pick is almost "
+                                    "never a draw even when the draw probability is substantial.")
+    if not season_table.empty:
+        st.dataframe(season_table, hide_index=True, height=400, width="stretch")
+    else:
+        st.caption("The season schedule isn't reachable right now.")
+
+
 with tab_perf:
     if results_table is None:
         st.info("The evaluation results file (reports/results_table.csv) isn't available, so there's nothing to show here.")
+        season_track_record()
     else:
         test_span = f"{season_label(TEST_SEASONS[0])} to {season_label(TEST_SEASONS[-1])}"
         n_matches = int(results_table["n_matches"].iloc[0]) if "n_matches" in results_table else None
@@ -506,7 +540,7 @@ with tab_perf:
             k2.metric("Bookmaker forecast: log loss", f"{verdict['market_ll']:.3f}", border=True)
             if "diff" in verdict:
                 k3.metric("Difference (model minus bookmaker)", f"{verdict['diff']:+.3f}",
-                          delta=f"95% CI {verdict['lo']:+.3f} to {verdict['hi']:+.3f}", delta_color="off",
+                          delta=f"95% CI {verdict['lo']:+.3f} to {verdict['hi']:+.3f}", delta_color="off", delta_arrow="off",
                           border=True)
         elif model_name in results_table.index:
             r = results_table.loc[model_name]
@@ -515,7 +549,7 @@ with tab_perf:
                       help="How often the most likely outcome was the actual result.")
             k2.metric("Log loss", f"{r['log_loss']:.3f}", border=True,
                       delta=f"95% CI {r['log_loss_lo']:.3f} to {r['log_loss_hi']:.3f}" if "log_loss_lo" in r else None,
-                      delta_color="off", help="Lower is better. Penalises confident wrong predictions.")
+                      delta_color="off", delta_arrow="off", help="Lower is better. Penalises confident wrong predictions.")
             k3.metric("Ranked probability score", f"{r['rps']:.3f}" if "rps" in r else "n/a", border=True,
                       help="Lower is better. Treats home / draw / away as ordered.")
 
@@ -527,6 +561,8 @@ with tab_perf:
         if calib_models:
             with st.expander("Calibration variants"):
                 st.dataframe(results_display(results_table, calib_models), hide_index=True, width="stretch")
+
+        season_track_record()
 
         ablation = load_report_csv("ablation_table.csv", index_col="model")
         if ablation is not None:
@@ -556,26 +592,6 @@ with tab_perf:
         st.markdown(f"Full numbers, including every pairwise comparison: "
                     f"[evaluation report]({REPO_URL}/blob/main/reports/evaluation_report.md).")
 
-    st.subheader(f"This season so far ({season_label(CURRENT_SEASON)})", anchor=False)
-    st.caption("Every match this season: already-played matches show the model's pre-match pick next to what "
-               "actually happened, so the track record can be checked directly.")
-    season_table = build_season_comparison_table(model, features_all, full_season_df)
-    played_rows = season_table[season_table["Actual result"] != "Not played yet"] if not season_table.empty else season_table
-    scored_rows = played_rows[played_rows["Correct?"] != ""] if not played_rows.empty else played_rows
-    if not scored_rows.empty:
-        n_correct = scored_rows["Correct?"].str.endswith("Yes").sum()
-        home_goals = scored_rows["Actual result"].str.split(" - ").str[0].astype(int)
-        away_goals = scored_rows["Actual result"].str.split(" - ").str[1].astype(int)
-        s1, s2 = st.columns(2)
-        s1.metric(f"Correct picks ({len(scored_rows)} played)", f"{n_correct / len(scored_rows):.0%}", border=True)
-        s2.metric("Actual draws vs predicted draws",
-                  f"{int((home_goals == away_goals).sum())} vs {int((scored_rows['Predicted'] == 'Draw').sum())}",
-                  border=True, help="Draws are rarely the single most likely outcome, so the top pick is almost "
-                                    "never a draw even when the draw probability is substantial.")
-    if not season_table.empty:
-        st.dataframe(season_table, hide_index=True, height=400, width="stretch")
-    else:
-        st.caption("The season schedule isn't reachable right now.")
 
 # ---------------------------------------------------------------------------
 # How it works tab
