@@ -49,10 +49,12 @@ def lookup_actual_result(raw_all: pd.DataFrame, full_season_df: pd.DataFrame,
     None if neither has it yet, since there's nothing honest to show
     until the data catches up, not even a "check back later" placeholder.
     """
+    # An empty schedule (fetch failed) has no datetime dtype, so .dt would
+    # raise; skip straight to the historical-results fallback instead.
     fs_match = full_season_df[
         (full_season_df["home_team"] == home_team) & (full_season_df["away_team"] == away_team)
         & (full_season_df["kickoff"].dt.date == kickoff.date()) & full_season_df["home_goals"].notna()
-    ]
+    ] if not full_season_df.empty else full_season_df
     if not fs_match.empty:
         row = fs_match.iloc[0]
         hg, ag = int(row["home_goals"]), int(row["away_goals"])
