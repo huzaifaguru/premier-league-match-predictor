@@ -6,7 +6,7 @@
 > The benchmark is the bookmakers' own forecast (the probabilities implied by Bet365's prices, with the profit margin removed). The best model reaches log loss 0.981 against the bookmaker's 0.966, a statistically clear gap (95% CI of the difference: +0.005 to +0.024), so **no model is as accurate as the professional forecast**.
 > Elo team strength carries almost all of the signal: an Elo-only model is within 0.003 log loss of the full 59-feature model, and the difference is not significant.
 
-**Live app:** <!-- TODO: paste your Streamlit Community Cloud URL here --> _coming soon_ · **[Results](#results)** · **[Limitations](#limitations)** · **[What I'd do next](#what-id-do-next)**
+**[Live app](https://premier-league-match-predictor-b.streamlit.app/)** · **[Results](#results)** · **[Limitations](#limitations)** · **[What I'd do next](#what-id-do-next)**
 
 ## Problem Statement
 
