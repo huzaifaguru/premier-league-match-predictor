@@ -177,7 +177,11 @@ class BookmakerBaseline:
 
 def make_logistic_model(C: float = 1.0) -> Pipeline:
     return Pipeline([
-        ("impute", SimpleImputer(strategy="median")),
+        # keep_empty_features: a column that is entirely missing in the
+        # training window (e.g. xG before 2014/15) is kept (filled with 0)
+        # instead of silently dropped, so coefficients always line up with
+        # the feature list.
+        ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
         ("scale", StandardScaler()),
         ("clf", LogisticRegression(C=C, max_iter=2000)),
     ])
@@ -222,7 +226,7 @@ class OrderedLogitModel:
         return z[:p], z[p], z[p] + np.exp(z[p + 1])
 
     def fit(self, train_df: pd.DataFrame):
-        self.imputer = SimpleImputer(strategy="median").fit(train_df[self.features])
+        self.imputer = SimpleImputer(strategy="median", keep_empty_features=True).fit(train_df[self.features])
         self.scaler = StandardScaler().fit(self.imputer.transform(train_df[self.features]))
         X = self._matrix(train_df)
         y = 2 - encode_labels(train_df)  # H, D, A (0, 1, 2) -> ordinal A, D, H (0, 1, 2)

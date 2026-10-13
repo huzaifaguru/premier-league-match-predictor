@@ -184,3 +184,19 @@ def test_ordered_logit_probabilities_are_valid_and_ordered():
     assert p[0, 2] > p[1, 2] > p[2, 2]   # away win likelier for the weak home side
     assert p[2, 0] > p[1, 0] > p[0, 0]   # home win likelier for the strong home side
     assert p[1, 1] > p[0, 1] and p[1, 1] > p[2, 1]  # draw peaks when evenly matched
+
+
+def test_models_cope_with_a_feature_that_is_entirely_missing_in_training():
+    """e.g. xG columns in a training window that ends before 2014/15. The
+    imputer used to drop such a column, leaving the ordered logit's
+    coefficients out of line with its feature list (IndexError)."""
+    from src.train import LogisticRegressionModel, OrderedLogitModel
+
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"x": rng.normal(size=300), "empty": np.nan,
+                       "result": rng.choice(["H", "D", "A"], size=300)})
+    later = pd.DataFrame({"x": [0.0, 1.0], "empty": [0.5, 2.0]})
+    for model in (OrderedLogitModel(C=1.0, features=["x", "empty"]),
+                  LogisticRegressionModel(C=1.0, features=["x", "empty"])):
+        p = model.fit(df).predict_proba(later)
+        assert p.shape == (2, 3) and np.allclose(p.sum(axis=1), 1)
