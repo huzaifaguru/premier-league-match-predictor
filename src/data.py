@@ -6,10 +6,12 @@ formats change from dd/mm/yy to dd/mm/yyyy around 2019/20), so this module's
 job is narrow: fetch, cache, and normalize to one stable schema. No feature
 engineering happens here, that's features.py.
 """
+import csv
 import io
 import logging
 import re
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -107,10 +109,37 @@ def _parse_dates(raw_dates: pd.Series) -> pd.Series:
     return pd.to_datetime(raw_dates, dayfirst=True, format="mixed")
 
 
+def _read_raw_csv(path) -> pd.DataFrame:
+    """Read a football-data.co.uk CSV. Most files are clean and are read
+    directly. Some older ones (e.g. 2003/04, 2004/05) are malformed: rows
+    with extra *empty* trailing fields beyond the header, and a few
+    non-UTF-8 bytes. Those are re-read with the empty trailing fields
+    trimmed. Every row is checked first, so a field beyond the header that
+    holds data raises instead of being dropped. (Reading such a file
+    directly is not safe: if every row had one extra field, pandas would
+    silently use the first column as the index and shift the rest.)"""
+    raw_bytes = Path(path).read_bytes()
+    try:
+        text, is_utf8 = raw_bytes.decode("utf-8-sig"), True
+    except UnicodeDecodeError:
+        text, is_utf8 = raw_bytes.decode("latin-1"), False
+    rows = [r for r in csv.reader(io.StringIO(text, newline="")) if r]
+    header, body = rows[0], rows[1:]
+    for line_no, row in enumerate(body, start=2):
+        if any(field.strip() for field in row[len(header):]):
+            raise ValueError(f"{path}: line {line_no} has data beyond the {len(header)} header columns")
+    if is_utf8 and all(len(row) <= len(header) for row in body):
+        return pd.read_csv(path)
+    buffer = io.StringIO()
+    csv.writer(buffer).writerows([header] + [row[:len(header)] for row in body])
+    buffer.seek(0)
+    return pd.read_csv(buffer)
+
+
 def load_season(season: str, force_download: bool = False) -> pd.DataFrame:
     """Load one season's matches as a normalized DataFrame."""
     path = download_season(season, force=force_download)
-    raw = pd.read_csv(path)
+    raw = _read_raw_csv(path)
 
     available = {src: dst for src, dst in COLUMN_MAP.items() if src in raw.columns}
     missing = set(COLUMN_MAP) - set(available)
