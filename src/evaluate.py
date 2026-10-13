@@ -22,7 +22,6 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 from src.config import MODELS_DIR, RAW_DATA_DIR, ROOT_DIR, SEASON_CODES, TEST_SEASONS
-from src.features import FEATURE_COLUMNS
 from src.train import (
     CLASSES,
     LABEL_TO_IDX,
@@ -48,8 +47,8 @@ _LOG_EPS = np.finfo(float).eps
 # README's main table. Calibration variants and the no-decay Dixon-Coles
 # are reported in the full table and the report file.
 MAIN_MODELS = [
-    "bookmaker_closing", "bookmaker_baseline", "blend_lr_dixon_coles", "logistic_regression",
-    "xgboost", "dixon_coles",
+    "bookmaker_closing", "bookmaker_baseline", "blend_ordered_dixon_coles", "ordered_logit",
+    "blend_lr_dixon_coles", "logistic_regression", "xgboost", "dixon_coles",
 ]
 
 
@@ -232,10 +231,10 @@ def shap_feature_importance(df: pd.DataFrame, best_params: dict, top_n: int = 15
     model.fit(train_df)
 
     explainer = shap.TreeExplainer(model.model)
-    shap_array = _normalize_shap_array(explainer.shap_values(test_df[FEATURE_COLUMNS]))
+    shap_array = _normalize_shap_array(explainer.shap_values(test_df[model.features]))
 
     mean_abs = np.abs(shap_array).mean(axis=(0, 2))  # mean over samples AND classes
-    importance = pd.DataFrame({"feature": FEATURE_COLUMNS, "mean_abs_shap": mean_abs})
+    importance = pd.DataFrame({"feature": model.features, "mean_abs_shap": mean_abs})
     importance = importance.sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
 
     fig, ax = plt.subplots(figsize=(8, 6))

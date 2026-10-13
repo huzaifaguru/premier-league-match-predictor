@@ -21,10 +21,14 @@ import xgboost
 from src.config import MODELS_DIR, SEASON_CODES
 from src.features import FEATURE_COLUMNS
 from src.train import (
+    DC_FEATURE_COLUMNS,
+    DEFAULT_DC_XI,
     BlendModel,
     CalibratedModel,
     LogisticRegressionModel,
+    OrderedLogitModel,
     XGBoostModel,
+    add_dc_features,
     load_best_params,
     load_feature_table,
     model_factories,
@@ -42,14 +46,18 @@ def _library_versions() -> dict:
 def train_app_bundle(features: pd.DataFrame | None = None) -> dict:
     best = load_best_params()
     name = best["primary_model"]
+    dc_xi = best.get("dixon_coles", {}).get("xi", DEFAULT_DC_XI)
     if features is None:
-        features = load_feature_table(elo_params=best["elo"])
+        features = load_feature_table(elo_params=best["elo"], dc_xi=dc_xi)
+    elif not set(DC_FEATURE_COLUMNS) <= set(features.columns):
+        features = add_dc_features(features, xi=dc_xi)
     train_df = features[features["season"].isin(SEASON_CODES)]
     model = model_factories(best)[name]().fit(train_df)
     return {
         "model": model,
         "model_name": name,
         "elo_params": best["elo"],
+        "dc_xi": dc_xi,
         "trained_on_seasons": list(SEASON_CODES),
         "versions": _library_versions(),
     }
@@ -94,10 +102,16 @@ def _explained_component(model):
 
 
 def explanation_note(model) -> str:
+    component = _explained_component(model)
+    parts = []
     if isinstance(model, BlendModel):
-        return (f"Factors shown are for the logistic-regression part of the blend, which carries "
-                f"{model.weight:.0%} of the weight; the Dixon-Coles part rates teams from goals scored "
-                "and conceded rather than from these features.")
+        parts.append(f"Factors shown are for the regression part of the blend, which carries {model.weight:.0%} "
+                     "of the weight; the Dixon-Coles part rates teams from goals scored and conceded.")
+    if isinstance(component, OrderedLogitModel):
+        parts.append("This model scores each match on one home-versus-away scale: bars to the right push toward "
+                     "a home win, bars to the left toward an away win. A draw is most likely when they cancel out.")
+    if parts:
+        return " ".join(parts)
     if isinstance(model, CalibratedModel):
         return "Factors are computed for the model before its calibration step, which only rescales probabilities."
     return ""
@@ -113,7 +127,16 @@ def explain_prediction(model, row: pd.DataFrame, class_idx: int, top_n: int = 8)
     SHAP value). XGBoost: TreeExplainer SHAP values.
     """
     component = _explained_component(model)
-    if isinstance(component, LogisticRegressionModel):
+    if isinstance(component, OrderedLogitModel):
+        # One latent home-vs-away strength score: coefficient x standardised
+        # value is each feature's exact contribution to it. Shown toward the
+        # home side (and flipped when explaining an away win).
+        w = component.coef_[:len(component.features)]
+        values = w * component._matrix(row)[0]
+        if class_idx == 2:
+            values = -values
+        features = component.features
+    elif isinstance(component, LogisticRegressionModel):
         steps = component.pipeline.named_steps
         z = steps["scale"].transform(steps["impute"].transform(row[component.features]))[0]
         contrib = steps["clf"].coef_ * z  # (3 classes, n features)
@@ -132,11 +155,15 @@ def explain_prediction(model, row: pd.DataFrame, class_idx: int, top_n: int = 8)
     return out.loc[order].head(top_n).reset_index(drop=True)
 
 
-def match_row(feat: dict, home_team: str, away_team: str, date: pd.Timestamp) -> pd.DataFrame:
-    """One-row frame in the shape every model's predict_proba expects:
-    the engineered features plus team names/date (Dixon-Coles needs them)."""
+def match_row(feat: dict, home_team: str, away_team: str, date: pd.Timestamp, live_dc=None) -> pd.DataFrame:
+    """One-row frame in the shape every model's predict_proba expects: the
+    engineered features, team names/date (Dixon-Coles needs them), and the
+    Dixon-Coles input probabilities from `live_dc` (a model fitted on
+    matches before today; see train.fit_live_dc). Without one, those inputs
+    are left missing and the models impute them."""
     row = pd.DataFrame([feat])[FEATURE_COLUMNS]
     row["home_team"], row["away_team"], row["date"] = home_team, away_team, pd.Timestamp(date)
+    row[DC_FEATURE_COLUMNS] = live_dc.predict_proba(row) if live_dc is not None else np.nan
     return row
 
 

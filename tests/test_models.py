@@ -146,3 +146,41 @@ def test_select_bets_picks_max_ev_outcome_with_correct_odds():
     assert bet["claimed_ev"] == pytest.approx(0.35)
     assert bool(bet["won"])
     assert bet["flat_return"] == pytest.approx(3.5)
+
+
+def test_dc_features_only_use_matches_before_each_month():
+    from src.train import DC_FEATURE_COLUMNS, add_dc_features
+
+    df = _toy_goals(n_rounds=8)
+    df["date"] = pd.date_range("2020-01-01", periods=len(df), freq="D")
+    original = add_dc_features(df, min_prior_matches=30)
+    assert original[DC_FEATURE_COLUMNS].notna().any().all()
+
+    # Change one result in the middle; months up to and including that
+    # match's month must be untouched (they're fitted on earlier months only).
+    k = len(df) // 2
+    perturbed = df.copy()
+    perturbed.loc[k, ["home_goals", "away_goals", "result"]] = [0, 9, "A"]
+    changed = add_dc_features(perturbed, min_prior_matches=30)
+    month_end = df.loc[k, "date"].to_period("M").to_timestamp(how="end")
+    upto = df["date"] <= month_end
+    pd.testing.assert_frame_equal(original.loc[upto, DC_FEATURE_COLUMNS], changed.loc[upto, DC_FEATURE_COLUMNS])
+    assert not original.loc[~upto, DC_FEATURE_COLUMNS].equals(changed.loc[~upto, DC_FEATURE_COLUMNS])
+
+
+def test_ordered_logit_probabilities_are_valid_and_ordered():
+    from src.train import OrderedLogitModel
+
+    rng = np.random.default_rng(0)
+    n = 3000
+    strength = rng.normal(0, 1, n)
+    latent = 1.2 * strength + rng.logistic(0, 1, n)
+    result = np.where(latent > 0.6, "H", np.where(latent < -0.6, "A", "D"))
+    df = pd.DataFrame({"strength": strength, "noise": rng.normal(0, 1, n), "result": result})
+    model = OrderedLogitModel(C=1.0, features=["strength", "noise"]).fit(df)
+    test = pd.DataFrame({"strength": [-2.0, 0.0, 2.0], "noise": [0.0, 0.0, 0.0]})
+    p = model.predict_proba(test)
+    assert np.allclose(p.sum(axis=1), 1) and (p > 0).all()
+    assert p[0, 2] > p[1, 2] > p[2, 2]   # away win likelier for the weak home side
+    assert p[2, 0] > p[1, 0] > p[0, 0]   # home win likelier for the strong home side
+    assert p[1, 1] > p[0, 1] and p[1, 1] > p[2, 1]  # draw peaks when evenly matched

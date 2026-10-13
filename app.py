@@ -21,8 +21,8 @@ from src.app_helpers import chart_label, compute_standings, head_to_head, lookup
 from src.app_model import explain_prediction, explanation_note, load_app_bundle, match_row, train_app_bundle
 from src.config import CURRENT_SEASON, ROOT_DIR, SEASON_CODES, TEST_SEASONS
 from src.data import load_full_season_fixtures, load_raw_matches
-from src.features import FEATURE_COLUMNS, build_feature_table, describe_feature
-from src.train import CLASSES, load_best_params
+from src.features import build_feature_table, describe_feature
+from src.train import CLASSES, DEFAULT_DC_XI, MODEL_FEATURES, add_dc_features, fit_live_dc, load_best_params
 from src import ui
 
 REPO_URL = "https://github.com/huzaifaguru/premier-league-match-predictor"
@@ -156,6 +156,15 @@ def load_app_resources():
         bundle = train_app_bundle(features_all)
     model = bundle["model"]
 
+    # The Dixon-Coles inputs: for this season's matches (the track-record
+    # table) built the same leakage-safe monthly way as in training, and for
+    # new predictions a model fitted on every match played before today.
+    dc_xi = bundle.get("dc_xi", DEFAULT_DC_XI)
+    season_start = features_all.loc[features_all["season"] == CURRENT_SEASON, "date"].min()
+    if pd.notna(season_start):
+        features_all = add_dc_features(features_all, xi=dc_xi, from_date=season_start)
+    live_dc = fit_live_dc(raw_all, pd.Timestamp.now(), xi=dc_xi)
+
     # Same season powers both the team dropdown roster and the standings
     # table: early in a season (fewer than 20 matches played, roughly one
     # full gameweek) there isn't enough data for either to be meaningful,
@@ -168,7 +177,8 @@ def load_app_resources():
     current_teams = sorted(set(context_matches["home_team"]) | set(context_matches["away_team"]))
     standings_df = compute_standings(context_matches)
 
-    return model, bundle["model_name"], state, current_teams, raw_all, standings_df, context_season, features_all
+    return (model, bundle["model_name"], state, current_teams, raw_all, standings_df, context_season,
+            features_all, live_dc)
 
 
 @st.cache_data
@@ -199,7 +209,8 @@ st.markdown(ui.hero_html(
 ), unsafe_allow_html=True)
 
 try:
-    model, model_name, state, teams, raw_all, standings_df, standings_season, features_all = load_app_resources()
+    (model, model_name, state, teams, raw_all, standings_df, standings_season,
+     features_all, live_dc) = load_app_resources()
 except Exception as exc:  # any startup failure should become a readable message, not a traceback
     logging.getLogger(__name__).exception("Startup failed")
     st.error(
@@ -321,7 +332,7 @@ with tab_predict:
     else:
         try:
             feat = state.snapshot(home_team, away_team, pd.Timestamp(match_date))
-            X_row = match_row(feat, home_team, away_team, pd.Timestamp(match_date))
+            X_row = match_row(feat, home_team, away_team, pd.Timestamp(match_date), live_dc=live_dc)
             proba = model.predict_proba(X_row)[0]
             pred_idx = int(proba.argmax())
             predicted_class = CLASSES[pred_idx]
@@ -392,7 +403,7 @@ with tab_predict:
         with st.expander(f"Head-to-head: last meetings of {home_team} and {away_team}"):
             h2h = head_to_head(raw_all, home_team, away_team, pd.Timestamp(match_date))
             if h2h.empty:
-                st.caption("No previous meetings on record in this dataset (2010/11 onward).")
+                st.caption(f"No previous meetings on record in this dataset ({season_label(SEASON_CODES[0])} onward).")
             else:
                 st.dataframe(pd.DataFrame({
                     "Date": h2h["date"].dt.strftime("%Y-%m-%d"),
@@ -568,7 +579,7 @@ with tab_perf:
         if ablation is not None:
             st.subheader("Where the signal comes from", anchor=False)
             st.caption("A feature ablation: the same models with only Elo ratings, Elo plus rolling form, and all "
-                       f"{len(FEATURE_COLUMNS)} features, each tuned separately.")
+                       f"{len(MODEL_FEATURES)} inputs, each tuned separately.")
             st.dataframe(results_display(ablation, [m for m in ablation.index if m != "bookmaker_baseline"]),
                          hide_index=True, width="stretch")
 
@@ -605,10 +616,11 @@ with tab_how:
 [football-data.co.uk](https://www.football-data.co.uk/): goals, shots, shots on target and corners.
 The current season is added as it's played, so team form and ratings stay up to date.
 
-**Features.** For each match, {len(FEATURE_COLUMNS)} numbers built only from what was known *before* kickoff:
-each team's recent form (last 5 and 10 matches), home-only and away-only form, rest days, and an Elo rating
-that goes up or down after every result. Tests in the repo check that no match's features can see its own
-result or any later one.
+**Features.** For each match, {len(MODEL_FEATURES)} numbers built only from what was known *before* kickoff:
+each team's recent form (last 5 and 10 matches), home-only and away-only form, rest days, an Elo rating that
+goes up or down after every result, a second rating based on each team's share of shots on target, and a
+goals model's (Dixon-Coles) home / draw / away chances. Tests in the repo check that no match's features can
+see its own result or any later one.
 
 **Model.** The app serves the **{display_name(model_name)}**, the model with the best score in walk-forward
 cross-validation on the earlier seasons. Walk-forward means always training on the past and testing on the

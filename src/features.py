@@ -20,6 +20,8 @@ from src.config import (
     ELO_SEASON_CARRYOVER,
     HOME_AWAY_FORM_WINDOW,
     ROLLING_WINDOWS,
+    SOT_ELO_HOME_ADVANTAGE,
+    SOT_ELO_K_FACTOR,
 )
 
 STAT_KEYS = [
@@ -97,6 +99,7 @@ class LeagueState:
         self.away_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=HOME_AWAY_FORM_WINDOW))
         self.last_played: dict[str, pd.Timestamp] = {}
         self.elo: dict[str, float] = defaultdict(lambda: ELO_INITIAL_RATING)
+        self.sot_elo: dict[str, float] = defaultdict(lambda: ELO_INITIAL_RATING)
         self.current_season: str | None = None
 
     def start_season_if_new(self, season: str):
@@ -105,8 +108,9 @@ class LeagueState:
             # approximate squad turnover. Teams not yet seen stay untouched
             # (they'll init at ELO_INITIAL_RATING on first appearance,
             # including newly promoted teams).
-            for team in list(self.elo.keys()):
-                self.elo[team] = ELO_INITIAL_RATING + self.carryover * (self.elo[team] - ELO_INITIAL_RATING)
+            for ratings in (self.elo, self.sot_elo):
+                for team in list(ratings.keys()):
+                    ratings[team] = ELO_INITIAL_RATING + self.carryover * (ratings[team] - ELO_INITIAL_RATING)
         self.current_season = season
 
     def snapshot(self, home: str, away: str, date: pd.Timestamp) -> dict:
@@ -137,6 +141,10 @@ class LeagueState:
         feat["elo_away_pre"] = elo_away_pre
         feat["elo_diff"] = elo_home_pre + self.home_advantage - elo_away_pre
 
+        feat["sot_elo_home_pre"] = self.sot_elo[home]
+        feat["sot_elo_away_pre"] = self.sot_elo[away]
+        feat["sot_elo_diff"] = self.sot_elo[home] + SOT_ELO_HOME_ADVANTAGE - self.sot_elo[away]
+
         return feat
 
     def advance(self, row: dict):
@@ -147,6 +155,15 @@ class LeagueState:
         actual_home = 1.0 if row["result"] == "H" else (0.5 if row["result"] == "D" else 0.0)
         self.elo[home] = elo_home_pre + self.k_factor * (actual_home - expected_home)
         self.elo[away] = elo_away_pre + self.k_factor * ((1 - actual_home) - (1 - expected_home))
+
+        # Shots-on-target Elo: the "result" is the home side's share of the
+        # match's shots on target (0.5 if neither side had one).
+        hst, ast = row["home_shots_target"], row["away_shots_target"]
+        if pd.notna(hst) and pd.notna(ast):
+            sot_actual = 0.5 if hst + ast == 0 else hst / (hst + ast)
+            sot_expected = 1 / (1 + 10 ** (-(self.sot_elo[home] + SOT_ELO_HOME_ADVANTAGE - self.sot_elo[away]) / 400))
+            self.sot_elo[home] += SOT_ELO_K_FACTOR * (sot_actual - sot_expected)
+            self.sot_elo[away] -= SOT_ELO_K_FACTOR * (sot_actual - sot_expected)
 
         self.overall_history[home].append(_match_stats(row, is_home=True))
         self.overall_history[away].append(_match_stats(row, is_home=False))
@@ -220,6 +237,7 @@ def _feature_columns() -> list[str]:
         cols += [f"{side}_{tag}{HOME_AWAY_FORM_WINDOW}_{k}" for k in STAT_KEYS]
         cols.append(f"{side}_{tag}{HOME_AWAY_FORM_WINDOW}_n")
     cols += ["rest_days_home", "rest_days_away", "elo_home_pre", "elo_away_pre", "elo_diff"]
+    cols += ["sot_elo_home_pre", "sot_elo_away_pre", "sot_elo_diff"]
     return cols
 
 
@@ -282,6 +300,12 @@ def describe_feature(name: str, home_team: str | None = None, away_team: str | N
         "elo_away_pre": f"{away_label} Elo rating going into this match.",
         "rest_days_home": f"Days since {home_team}'s previous match." if home_team else "Days since the home team's previous match.",
         "rest_days_away": f"Days since {away_team}'s previous match." if away_team else "Days since the away team's previous match.",
+        "sot_elo_home_pre": f"{home_label} shots-on-target rating: how much of the shots on target it has been winning in recent matches.",
+        "sot_elo_away_pre": f"{away_label} shots-on-target rating: how much of the shots on target it has been winning in recent matches.",
+        "sot_elo_diff": "The gap between the two teams' shots-on-target ratings, with home advantage added.",
+        "dc_p_home": f"The goals model's (Dixon-Coles) chance of a {home_team} win." if home_team else "The goals model's (Dixon-Coles) chance of a home win.",
+        "dc_p_draw": "The goals model's (Dixon-Coles) chance of a draw.",
+        "dc_p_away": f"The goals model's (Dixon-Coles) chance of a {away_team} win." if away_team else "The goals model's (Dixon-Coles) chance of an away win.",
     }
     if name in special:
         return special[name]

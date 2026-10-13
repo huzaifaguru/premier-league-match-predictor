@@ -170,3 +170,30 @@ def test_custom_elo_params_are_used():
     # gains exactly K * 0.5 from winning match 1.
     assert small_k.iloc[1]["elo_home_pre"] == pytest.approx(ELO_INITIAL_RATING + 5)
     assert big_k.iloc[1]["elo_home_pre"] == pytest.approx(ELO_INITIAL_RATING + 20)
+
+
+def test_shots_on_target_rating_rewards_the_side_that_wins_the_shot_battle():
+    raw = pd.DataFrame([
+        _match("2023-08-01", "A", "B", 0, 0, hst=9, ast=1),   # A dominates shots, scoreline level
+        _match("2023-08-08", "A", "B", 0, 0),
+    ])
+    feat = build_feature_table(raw)
+    assert feat.iloc[0]["sot_elo_home_pre"] == ELO_INITIAL_RATING
+    assert feat.iloc[1]["sot_elo_home_pre"] > ELO_INITIAL_RATING > feat.iloc[1]["sot_elo_away_pre"]
+    # The results-based Elo only sees a draw, and moves far less.
+    assert abs(feat.iloc[1]["elo_home_pre"] - ELO_INITIAL_RATING) < feat.iloc[1]["sot_elo_home_pre"] - ELO_INITIAL_RATING
+
+
+def test_malformed_csv_trailing_empty_fields_are_trimmed_but_data_is_never_dropped(tmp_path):
+    from src.data import _read_raw_csv
+
+    ok = tmp_path / "ok.csv"
+    ok.write_bytes(b"Date,HomeTeam,FTHG\n01/08/03,Arsenal,2\n02/08/03,Fulham\xa0,1,,,\n")
+    df = _read_raw_csv(ok)
+    assert list(df.columns) == ["Date", "HomeTeam", "FTHG"] and len(df) == 2
+    assert df["FTHG"].tolist() == [2, 1]
+
+    bad = tmp_path / "bad.csv"
+    bad.write_bytes(b"Date,HomeTeam,FTHG\n01/08/03,Arsenal,2,99\n")
+    with pytest.raises(ValueError):
+        _read_raw_csv(bad)

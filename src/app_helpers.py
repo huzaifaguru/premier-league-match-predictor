@@ -85,6 +85,12 @@ def chart_label(feature_name: str, home_team: str, away_team: str) -> str:
         "elo_away_pre": f"{away_team}'s Elo rating",
         "rest_days_home": f"{home_team}: rest days",
         "rest_days_away": f"{away_team}: rest days",
+        "sot_elo_home_pre": f"{home_team}'s shots-on-target rating",
+        "sot_elo_away_pre": f"{away_team}'s shots-on-target rating",
+        "sot_elo_diff": f"Shots-on-target rating gap ({home_team} vs {away_team})",
+        "dc_p_home": f"Goals model: {home_team} win chance",
+        "dc_p_draw": "Goals model: draw chance",
+        "dc_p_away": f"Goals model: {away_team} win chance",
     }
     if feature_name in special:
         return special[feature_name]

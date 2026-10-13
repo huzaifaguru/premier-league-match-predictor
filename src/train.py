@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from scipy.optimize import minimize, minimize_scalar
+from scipy.special import expit
 from scipy.stats import poisson
 from sklearn.impute import SimpleImputer
 from sklearn.isotonic import IsotonicRegression
@@ -30,7 +31,7 @@ from sklearn.metrics import log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.config import MODELS_DIR, SEASON_CODES, TEST_SEASONS
+from src.config import CV_FIRST_VAL_SEASON, MODELS_DIR, SEASON_CODES, TEST_SEASONS
 from src.features import FEATURE_COLUMNS, build_feature_table, parse_feature_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -39,6 +40,15 @@ logger = logging.getLogger(__name__)
 CLASSES = ["H", "D", "A"]
 LABEL_TO_IDX = {c: i for i, c in enumerate(CLASSES)}
 TRAIN_SEASONS = [s for s in SEASON_CODES if s not in TEST_SEASONS]
+# Number of training seasons before the first CV validation season.
+CV_MIN_TRAIN = TRAIN_SEASONS.index(CV_FIRST_VAL_SEASON)
+
+# Dixon-Coles home/draw/away probabilities used as model inputs (see
+# add_dc_features). Model-ready columns = engineered features + these.
+DC_FEATURE_COLUMNS = ["dc_p_home", "dc_p_draw", "dc_p_away"]
+MODEL_FEATURES = FEATURE_COLUMNS + DC_FEATURE_COLUMNS
+DC_FEATURE_WINDOW_DAYS = 4 * 365
+DEFAULT_DC_XI = 0.0015
 
 # Feature subsets for the ablation study (Elo only -> Elo + overall rolling
 # form -> all 59 features). "Form" here is the overall last-5/last-10
@@ -49,7 +59,7 @@ FORM_FEATURES = [c for c in FEATURE_COLUMNS if (p := parse_feature_name(c)) and 
 FEATURE_SETS = {
     "elo_only": ELO_FEATURES,
     "elo_form": ELO_FEATURES + FORM_FEATURES,
-    "all": FEATURE_COLUMNS,
+    "all": MODEL_FEATURES,
 }
 
 
@@ -65,18 +75,22 @@ def load_best_params() -> dict:
         return json.load(f)
 
 
-def load_feature_table(elo_params: dict | None = None) -> pd.DataFrame:
-    """Feature table built with the tuned Elo parameters from
-    best_params.json (config defaults if tuning hasn't been run). Rebuilt
-    from the cached raw CSVs every call (about a second), so it can never
-    silently disagree with the tuned Elo settings; the parquet copy is
-    written for inspection only."""
+def load_feature_table(elo_params: dict | None = None, dc_xi: float | None = None) -> pd.DataFrame:
+    """Feature table built with the tuned Elo parameters and Dixon-Coles
+    decay from best_params.json (defaults if tuning hasn't been run),
+    including the Dixon-Coles input columns. Rebuilt from the cached raw
+    CSVs every call, so it can never silently disagree with the tuned
+    settings; the parquet copy is written for inspection only."""
     from src.config import PROCESSED_DATA_DIR
     from src.data import load_raw_matches
 
+    best = load_best_params()
     if elo_params is None:
-        elo_params = load_best_params().get("elo")
+        elo_params = best.get("elo")
+    if dc_xi is None:
+        dc_xi = best.get("dixon_coles", {}).get("xi", DEFAULT_DC_XI)
     df = build_feature_table(load_raw_matches(), elo_params=elo_params)
+    df = add_dc_features(df, xi=dc_xi)
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(PROCESSED_DATA_DIR / "features.parquet", index=False)
     return df
@@ -97,7 +111,7 @@ def _seasons_in_order(df: pd.DataFrame) -> list[str]:
 # deployed (predict the next season using everything known so far).
 # ---------------------------------------------------------------------------
 
-def walk_forward_splits(df: pd.DataFrame, seasons: list[str], min_train_seasons: int = 4):
+def walk_forward_splits(df: pd.DataFrame, seasons: list[str], min_train_seasons: int = CV_MIN_TRAIN):
     for i in range(min_train_seasons, len(seasons)):
         train_seasons = seasons[:i]
         val_season = seasons[i]
@@ -107,7 +121,7 @@ def walk_forward_splits(df: pd.DataFrame, seasons: list[str], min_train_seasons:
 
 
 def walk_forward_oof(model_factory, df: pd.DataFrame, seasons: list[str],
-                     min_train_seasons: int = 4) -> list[tuple[str, np.ndarray, np.ndarray]]:
+                     min_train_seasons: int = CV_MIN_TRAIN) -> list[tuple[str, np.ndarray, np.ndarray]]:
     """Per-fold (val_season, y_true, proba) for one model configuration."""
     folds = []
     for train_idx, val_idx, val_season in walk_forward_splits(df, seasons, min_train_seasons):
@@ -172,7 +186,7 @@ def make_logistic_model(C: float = 1.0) -> Pipeline:
 class LogisticRegressionModel:
     def __init__(self, C: float = 1.0, features: list[str] | None = None):
         self.C = C
-        self.features = features or FEATURE_COLUMNS
+        self.features = features or MODEL_FEATURES
         self.pipeline = make_logistic_model(C)
 
     def fit(self, train_df: pd.DataFrame):
@@ -182,6 +196,54 @@ class LogisticRegressionModel:
     def predict_proba(self, eval_df: pd.DataFrame) -> np.ndarray:
         # pipeline.classes_ is sorted [0, 1, 2] == CLASSES order already.
         return self.pipeline.predict_proba(eval_df[self.features])
+
+
+# ---------------------------------------------------------------------------
+# Ordered (ordinal) logistic regression
+#
+# Football results have a natural order, away win < draw < home win, and a
+# draw is literally "in between". A multinomial model ignores that; this
+# one uses it: a single strength score per match (x.w) and two cutpoints,
+# so P(result <= k) = sigmoid(theta_k - x.w). Fewer parameters, and the
+# draw probability rises and falls in a sensible way with the strength gap.
+# ---------------------------------------------------------------------------
+
+class OrderedLogitModel:
+    def __init__(self, C: float = 0.001, features: list[str] | None = None):
+        self.C = C
+        self.features = features or MODEL_FEATURES
+
+    def _matrix(self, df: pd.DataFrame) -> np.ndarray:
+        return self.scaler.transform(self.imputer.transform(df[self.features]))
+
+    def _unpack(self, z: np.ndarray):
+        p = len(self.features)
+        # The second cutpoint is the first plus a positive gap, so they stay ordered.
+        return z[:p], z[p], z[p] + np.exp(z[p + 1])
+
+    def fit(self, train_df: pd.DataFrame):
+        self.imputer = SimpleImputer(strategy="median").fit(train_df[self.features])
+        self.scaler = StandardScaler().fit(self.imputer.transform(train_df[self.features]))
+        X = self._matrix(train_df)
+        y = 2 - encode_labels(train_df)  # H, D, A (0, 1, 2) -> ordinal A, D, H (0, 1, 2)
+
+        def nll(z):
+            w, t1, t2 = self._unpack(z)
+            eta = X @ w
+            c1, c2 = expit(t1 - eta), expit(t2 - eta)
+            p = np.where(y == 0, c1, np.where(y == 1, c2 - c1, 1 - c2))
+            return -np.log(np.clip(p, 1e-12, 1)).sum() + (w @ w) / (2 * self.C)
+
+        z0 = np.zeros(X.shape[1] + 2)
+        z0[-2] = -0.5
+        self.coef_ = minimize(nll, z0, method="L-BFGS-B").x
+        return self
+
+    def predict_proba(self, eval_df: pd.DataFrame) -> np.ndarray:
+        w, t1, t2 = self._unpack(self.coef_)
+        eta = self._matrix(eval_df) @ w
+        c1, c2 = expit(t1 - eta), expit(t2 - eta)
+        return np.column_stack([1 - c2, c2 - c1, c1])  # H, D, A
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +258,7 @@ DEFAULT_XGB_PARAMS = dict(
 
 class XGBoostModel:
     def __init__(self, features: list[str] | None = None, **params):
-        self.features = features or FEATURE_COLUMNS
+        self.features = features or MODEL_FEATURES
         self.params = {**DEFAULT_XGB_PARAMS, **params}
         self.model = xgb.XGBClassifier(
             objective="multi:softprob", num_class=3, eval_metric="mlogloss",
@@ -453,6 +515,38 @@ class DixonColesModel:
         return proba / proba.sum(axis=1, keepdims=True)  # renormalize (grid truncated at MAX_GOALS, tau)
 
 
+def add_dc_features(df: pd.DataFrame, xi: float = DEFAULT_DC_XI, window_days: int = DC_FEATURE_WINDOW_DAYS,
+                    min_prior_matches: int = 200, from_date: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Add Dixon-Coles home/draw/away probabilities as input columns,
+    leakage-safe: matches in each calendar month are predicted by a model
+    fitted only on matches *before* that month started (the previous
+    `window_days`, time-decayed by `xi`). Months with too little prior data
+    get NaN, which the models impute. `from_date` limits the work to months
+    from that date on (the app only needs the current season)."""
+    df = df.copy()
+    for col in DC_FEATURE_COLUMNS:
+        df[col] = np.nan
+    month = df["date"].dt.to_period("M")
+    for m in sorted(month.unique()):
+        start = m.to_timestamp()
+        if from_date is not None and start < pd.Timestamp(from_date).to_period("M").to_timestamp():
+            continue
+        prior = df[(df["date"] < start) & (df["date"] >= start - pd.Timedelta(days=window_days))]
+        if len(prior) < min_prior_matches:
+            continue
+        rows = month == m
+        df.loc[rows, DC_FEATURE_COLUMNS] = DixonColesModel(xi=xi).fit(prior).predict_proba(df.loc[rows])
+    return df
+
+
+def fit_live_dc(matches: pd.DataFrame, as_of: pd.Timestamp, xi: float = DEFAULT_DC_XI,
+                window_days: int = DC_FEATURE_WINDOW_DAYS) -> "DixonColesModel":
+    """The Dixon-Coles model behind live (app) predictions: same window and
+    decay as add_dc_features, fitted on every match played before `as_of`."""
+    prior = matches[(matches["date"] < as_of) & (matches["date"] >= as_of - pd.Timedelta(days=window_days))]
+    return DixonColesModel(xi=xi).fit(prior)
+
+
 # ---------------------------------------------------------------------------
 # Blend: a linear pool of logistic regression and Dixon-Coles probabilities.
 # They get at the problem from different directions (engineered form/Elo
@@ -461,9 +555,11 @@ class DixonColesModel:
 # ---------------------------------------------------------------------------
 
 class BlendModel:
-    def __init__(self, weight: float, lr_params: dict, dc_params: dict):
+    """`base` is "logistic" (multinomial) or "ordered" (ordered logit)."""
+
+    def __init__(self, weight: float, lr_params: dict, dc_params: dict, base: str = "logistic"):
         self.weight = weight
-        self.lr = LogisticRegressionModel(**lr_params)
+        self.lr = (OrderedLogitModel if base == "ordered" else LogisticRegressionModel)(**lr_params)
         self.dc = DixonColesModel(**dc_params)
 
     def fit(self, train_df: pd.DataFrame):
@@ -480,7 +576,7 @@ class BlendModel:
 # ---------------------------------------------------------------------------
 
 def tune_via_walk_forward(model_factory, param_grid: list[dict], df: pd.DataFrame,
-                           seasons: list[str], min_train_seasons: int = 4) -> tuple[dict, pd.DataFrame]:
+                           seasons: list[str], min_train_seasons: int = CV_MIN_TRAIN) -> tuple[dict, pd.DataFrame]:
     """For each candidate param dict, fit on the expanding training window
     of every fold and score log loss on that fold's validation season.
     Returns the best params (lowest mean log loss across folds) and a
@@ -511,6 +607,7 @@ XGB_PARAM_GRID = [
     for d, lr, n in itertools.product([1, 2, 3], [0.03, 0.1], [50, 100, 200, 300])
 ]
 LOGISTIC_PARAM_GRID = [{"C": c} for c in [0.00003, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.1, 1.0]]
+ORDERED_PARAM_GRID = [{"C": c} for c in [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03]]
 # Per-day decay rates. 0.0019/day is roughly the paper's optimum
 # (0.0065 per half-week); a half-life of ln(2)/xi days, i.e. from never
 # (xi=0) down to about 6 months (xi=0.004).
@@ -564,6 +661,9 @@ def model_factories(best: dict) -> dict:
         "dixon_coles": lambda: DixonColesModel(**dc),
         "dixon_coles_no_decay": lambda: DixonColesModel(xi=0.0),
         "blend_lr_dixon_coles": lambda: BlendModel(best["blend"]["weight"], lr, dc),
+        "ordered_logit": lambda: OrderedLogitModel(**best["ordered_logit"]),
+        "blend_ordered_dixon_coles": lambda: BlendModel(
+            best["blend_ordered"]["weight"], best["ordered_logit"], dc, base="ordered"),
     }
     for method in CALIBRATORS:
         # functools.partial rather than a lambda so a fitted CalibratedModel
@@ -597,10 +697,18 @@ def tune_and_save() -> dict:
     elo_best, elo_results = tune_elo_params(raw_tuning, TRAIN_SEASONS)
     logger.info("Best Elo params: %s", elo_best)
 
-    df = load_feature_table(elo_params=elo_best)
-    train_df = df[df["season"].isin(TRAIN_SEASONS)]
+    base_df = build_feature_table(raw, elo_params=elo_best)
     tuned = {"elo": elo_best}
     tables = {"elo": elo_results}
+
+    # Dixon-Coles only uses goals, so its decay is tuned first; the tuned
+    # decay then builds the Dixon-Coles input columns for the other models.
+    logger.info("Tuning Dixon-Coles time decay...")
+    tuned["dixon_coles"], tables["dixon_coles"] = tune_via_walk_forward(
+        lambda **p: DixonColesModel(**p), DIXON_COLES_PARAM_GRID,
+        base_df[base_df["season"].isin(TRAIN_SEASONS)], TRAIN_SEASONS)
+    df = load_feature_table(elo_params=elo_best, dc_xi=tuned["dixon_coles"]["xi"])
+    train_df = df[df["season"].isin(TRAIN_SEASONS)]
 
     logger.info("Tuning XGBoost...")
     tuned["xgboost"], tables["xgb"] = tune_via_walk_forward(
@@ -608,14 +716,17 @@ def tune_and_save() -> dict:
     logger.info("Tuning logistic regression...")
     tuned["logistic_regression"], tables["logistic"] = tune_via_walk_forward(
         lambda **p: LogisticRegressionModel(**p), LOGISTIC_PARAM_GRID, train_df, TRAIN_SEASONS)
-    logger.info("Tuning Dixon-Coles time decay...")
-    tuned["dixon_coles"], tables["dixon_coles"] = tune_via_walk_forward(
-        lambda **p: DixonColesModel(**p), DIXON_COLES_PARAM_GRID, train_df, TRAIN_SEASONS)
+    logger.info("Tuning ordered logit...")
+    tuned["ordered_logit"], tables["ordered_logit"] = tune_via_walk_forward(
+        lambda **p: OrderedLogitModel(**p), ORDERED_PARAM_GRID, train_df, TRAIN_SEASONS)
 
     lr_folds = walk_forward_oof(lambda: LogisticRegressionModel(**tuned["logistic_regression"]), train_df, TRAIN_SEASONS)
     dc_folds = walk_forward_oof(lambda: DixonColesModel(**tuned["dixon_coles"]), train_df, TRAIN_SEASONS)
     weight, tables["blend"] = tune_blend_weight(lr_folds, dc_folds)
     tuned["blend"] = {"weight": weight}
+    ordered_folds = walk_forward_oof(lambda: OrderedLogitModel(**tuned["ordered_logit"]), train_df, TRAIN_SEASONS)
+    weight, tables["blend_ordered"] = tune_blend_weight(ordered_folds, dc_folds)
+    tuned["blend_ordered"] = {"weight": weight}
 
     logger.info("Tuning ablation feature sets...")
     tuned["ablation"] = {}
