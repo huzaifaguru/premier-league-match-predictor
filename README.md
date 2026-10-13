@@ -185,6 +185,14 @@ they added almost nothing on top of the existing ratings:
   overall, and no clear gain even for promoted teams (-0.0006 [-0.0020,
   +0.0008]) or the first weeks of a season, where it was expected to help
   most.
+- **Weighting recent seasons more heavily** in training: worse at every
+  strength tried (+0.0001 to +0.0037), so all 26 seasons count equally.
+- **A stacking meta-model** learning how to combine the ordered logit,
+  logistic regression, XGBoost and Dixon-Coles from out-of-fold
+  predictions: worse (+0.004 to +0.007); the simple tuned blend wins.
+- **Other form-window lengths** (3/8, 4/12, 6/15, 10/20 instead of 5/10):
+  the best, 3/8, was -0.0005 [-0.0018, +0.0008], better in only 5 of 9
+  folds, which is noise.
 
 The model's results Elo, shots-on-target rating and goals model already
 track team quality closely. What the bookmaker has and this model lacks is
