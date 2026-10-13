@@ -171,6 +171,25 @@ amount the CV predicted:
 
 The gap to the bookmaker shrank from 0.016 to 0.011 but did not close.
 
+**Tried and not adopted.** Two richer measures of team quality were
+tested the same way (CV on the tuning seasons only) and left out because
+they added almost nothing on top of the existing ratings:
+
+- **Expected goals (xG)** from Understat (2014/15 onward), as a rating
+  and as rolling averages: about -0.001 CV log loss, 95% CI [-0.002,
+  +0.000]. Too small to justify the live app depending on scraping a site
+  with no official API.
+- **Squad market values** from the CC0
+  [transfermarkt-datasets](https://github.com/dcaribou/transfermarkt-datasets)
+  project, taken strictly before each match: -0.0003 [-0.0009, +0.0003]
+  overall, and no clear gain even for promoted teams (-0.0006 [-0.0020,
+  +0.0008]) or the first weeks of a season, where it was expected to help
+  most.
+
+The model's results Elo, shots-on-target rating and goals model already
+track team quality closely. What the bookmaker has and this model lacks is
+match-specific information: injuries, lineups and rotation.
+
 **Why the professionals still win: team strength carries almost all the
 signal.** A feature ablation, with each feature set's hyperparameters
 tuned separately by CV:
