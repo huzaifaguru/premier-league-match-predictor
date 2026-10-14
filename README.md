@@ -194,6 +194,11 @@ they added almost nothing on top of the existing ratings:
   the best, 3/8, was -0.0005 [-0.0018, +0.0008], better in only 5 of 9
   folds, which is noise.
 
+- **Pi-ratings** (Constantinou & Fenton, 2013; separate home and away
+  ratings driven by goal difference): best -0.0006 [-0.0013, +0.0001].
+  **A recent league home-advantage feature** (home advantage fell after
+  2020): +0.0001 [-0.0002, +0.0003]. **Weekly instead of monthly
+  goals-model refits**: -0.0002 [-0.0006, +0.0002]. All within noise.
 - **Player availability**: the share of a team's regulars (by FPL price,
   from the MIT-licensed
   [vaastav FPL archive](https://github.com/vaastav/Fantasy-Premier-League))
