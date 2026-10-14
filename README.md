@@ -194,9 +194,21 @@ they added almost nothing on top of the existing ratings:
   the best, 3/8, was -0.0005 [-0.0018, +0.0008], better in only 5 of 9
   folds, which is noise.
 
+- **Player availability**: the share of a team's regulars (by FPL price,
+  from the MIT-licensed
+  [vaastav FPL archive](https://github.com/vaastav/Fantasy-Premier-League))
+  who did not play, a stand-in for injuries, suspensions and rotation:
+  -0.0007 [-0.0020, +0.0005]. Clean starting-lineup data only exists from
+  2022/23, which is essentially the test period, so this used a proxy
+  that can only overstate the gain; even so it is not significant.
+
 The model's results Elo, shots-on-target rating and goals model already
-track team quality closely. What the bookmaker has and this model lacks is
-match-specific information: injuries, lineups and rotation.
+track team quality closely. The bookmaker's edge is mostly not lineups
+either: its forecast days before kickoff (before lineups are announced)
+already beats every model by 0.011, while knowing the lineups (its
+at-kickoff forecast) adds only another 0.006. The remaining gap is more
+likely earlier injury news, expert judgment and the betting market
+pooling information.
 
 **Why the professionals still win: team strength carries almost all the
 signal.** A feature ablation, with each feature set's hyperparameters
